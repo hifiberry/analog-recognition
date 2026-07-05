@@ -40,9 +40,37 @@ pub fn parse_songrec_line(line: &str) -> Option<RecognizedTrack> {
     Some(RecognizedTrack { title, artist, album, genre })
 }
 
+pub struct Deduper {
+    last_title: Option<String>,
+}
+
+impl Deduper {
+    pub fn new() -> Self {
+        Deduper { last_title: None }
+    }
+
+    pub fn should_emit(&mut self, track: &RecognizedTrack) -> bool {
+        if self.last_title.as_deref() == Some(track.title.as_str()) {
+            false
+        } else {
+            self.last_title = Some(track.title.clone());
+            true
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn track(title: &str) -> RecognizedTrack {
+        RecognizedTrack {
+            title: title.to_string(),
+            artist: "Artist".to_string(),
+            album: None,
+            genre: None,
+        }
+    }
 
     // Trimmed but structurally real shape, based on an actual songrec match
     // captured against the live analog input (Sophie Hunger - Headlights).
@@ -103,5 +131,29 @@ mod tests {
     #[test]
     fn ignores_json_without_a_track_field() {
         assert_eq!(parse_songrec_line(r#"{"location": {}}"#), None);
+    }
+
+    #[test]
+    fn first_track_is_always_emitted() {
+        let mut d = Deduper::new();
+        assert!(d.should_emit(&track("A")));
+    }
+
+    #[test]
+    fn repeated_same_title_is_not_emitted_again() {
+        let mut d = Deduper::new();
+        assert!(d.should_emit(&track("A")));
+        assert!(!d.should_emit(&track("A")));
+        assert!(!d.should_emit(&track("A")));
+    }
+
+    #[test]
+    fn new_title_is_emitted_after_a_change() {
+        let mut d = Deduper::new();
+        assert!(d.should_emit(&track("A")));
+        assert!(!d.should_emit(&track("A")));
+        assert!(d.should_emit(&track("B")));
+        assert!(!d.should_emit(&track("B")));
+        assert!(d.should_emit(&track("A"))); // back to A after B is a real change too
     }
 }
