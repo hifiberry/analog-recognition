@@ -109,6 +109,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sends_song_changed_without_album() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({
+                "type": "song_changed",
+                "song": {
+                    "title": "Song",
+                    "artist": "Artist"
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = AudioControlClient::new(server.uri(), "analog".to_string());
+        let track = RecognizedTrack {
+            title: "Song".to_string(),
+            artist: "Artist".to_string(),
+            album: None,
+            genre: None,
+        };
+        client.send_song_changed(&track).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn non_success_status_is_an_error() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
