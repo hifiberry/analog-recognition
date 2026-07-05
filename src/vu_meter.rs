@@ -187,4 +187,73 @@ mod tests {
         );
         assert_eq!(sm.current(), PlayerState::Stopped);
     }
+
+    #[test]
+    fn stop_debounce_timer_restarts_on_reversal_before_it_elapses() {
+        let mut sm = PlaybackStateMachine::new(&test_cfg());
+        let t0 = Instant::now();
+        sm.on_level(90, t0);
+        sm.on_level(90, t0 + Duration::from_secs(2)); // now Playing
+        assert_eq!(sm.current(), PlayerState::Playing);
+
+        // Original dip starts at t0+3s.
+        assert_eq!(sm.on_level(5, t0 + Duration::from_secs(3)), None);
+
+        // Recovers above stop_threshold at t0+15s, well before the 20s stop_debounce
+        // for the original dip would elapse (t0+23s). This must cancel the timer.
+        assert_eq!(sm.on_level(90, t0 + Duration::from_secs(15)), None);
+        assert_eq!(sm.current(), PlayerState::Playing);
+
+        // Second dip starts at t0+16s.
+        assert_eq!(sm.on_level(5, t0 + Duration::from_secs(16)), None);
+        assert_eq!(sm.current(), PlayerState::Playing);
+
+        // t0+35s is 19s after the SECOND dip (< 20s debounce, so still Playing) but
+        // 32s after the ORIGINAL dip (>= 20s debounce). If below_since were not reset
+        // during the t0+15s recovery, the stale t0+3s timestamp would have caused a
+        // Stopped transition here already. Correct behavior: still None/Playing.
+        assert_eq!(sm.on_level(5, t0 + Duration::from_secs(35)), None);
+        assert_eq!(sm.current(), PlayerState::Playing);
+
+        // t0+37s is 21s after the second dip (>= 20s debounce): now it should fire.
+        assert_eq!(
+            sm.on_level(5, t0 + Duration::from_secs(37)),
+            Some(PlayerState::Stopped)
+        );
+        assert_eq!(sm.current(), PlayerState::Stopped);
+    }
+
+    #[test]
+    fn start_debounce_timer_restarts_on_reversal_before_it_elapses() {
+        let mut sm = PlaybackStateMachine::new(&test_cfg());
+        let t0 = Instant::now();
+        assert_eq!(sm.current(), PlayerState::Stopped);
+
+        // Original rise starts at t0.
+        assert_eq!(sm.on_level(90, t0), None);
+
+        // Falls back below start_threshold at t0+300ms, well before the 1s
+        // start_debounce for the original rise would elapse (t0+1000ms). This must
+        // cancel the timer.
+        assert_eq!(sm.on_level(5, t0 + Duration::from_millis(300)), None);
+        assert_eq!(sm.current(), PlayerState::Stopped);
+
+        // Second rise starts at t0+400ms.
+        assert_eq!(sm.on_level(90, t0 + Duration::from_millis(400)), None);
+        assert_eq!(sm.current(), PlayerState::Stopped);
+
+        // t0+1000ms is 600ms after the SECOND rise (< 1s debounce, so still Stopped)
+        // but 1000ms after the ORIGINAL rise (>= 1s debounce). If above_since were
+        // not reset during the t0+300ms reversal, the stale t0 timestamp would have
+        // caused a Playing transition here already. Correct behavior: still None/Stopped.
+        assert_eq!(sm.on_level(90, t0 + Duration::from_millis(1000)), None);
+        assert_eq!(sm.current(), PlayerState::Stopped);
+
+        // t0+1401ms is 1001ms after the second rise (>= 1s debounce): now it should fire.
+        assert_eq!(
+            sm.on_level(90, t0 + Duration::from_millis(1401)),
+            Some(PlayerState::Playing)
+        );
+        assert_eq!(sm.current(), PlayerState::Playing);
+    }
 }
