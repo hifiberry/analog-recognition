@@ -105,9 +105,10 @@ pub async fn run_state_task(
     cfg: &VuMeterConfig,
     client: &AudioControlClient,
     song_reset: &Arc<Notify>,
+    state_tx: &tokio::sync::watch::Sender<PlayerState>,
 ) -> ! {
     loop {
-        if let Err(e) = connect_and_run(cfg, client, song_reset).await {
+        if let Err(e) = connect_and_run(cfg, client, song_reset, state_tx).await {
             log::warn!("vu-meter connection lost: {e}");
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -118,6 +119,7 @@ pub async fn connect_and_run(
     cfg: &VuMeterConfig,
     client: &AudioControlClient,
     song_reset: &Arc<Notify>,
+    state_tx: &tokio::sync::watch::Sender<PlayerState>,
 ) -> anyhow::Result<()> {
     let (ws_stream, _) = tokio_tungstenite::connect_async(&cfg.ws_url).await?;
     let (_, mut read) = ws_stream.split();
@@ -134,6 +136,7 @@ pub async fn connect_and_run(
                     if let Err(e) = client.send_state_changed(new_state).await {
                         log::warn!("failed to send state_changed: {e}");
                     }
+                    let _ = state_tx.send(new_state);
                     if new_state == PlayerState::Stopped {
                         if let Err(e) = client.send_song_cleared().await {
                             log::warn!("failed to clear song: {e}");
@@ -364,9 +367,10 @@ mod tests {
         });
 
         let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+        let (state_tx, _state_rx) = tokio::sync::watch::channel(PlayerState::Stopped);
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            connect_and_run(&cfg, &client, &song_reset),
+            connect_and_run(&cfg, &client, &song_reset, &state_tx),
         )
         .await;
         assert!(result.is_ok(), "connect_and_run should finish once the server closes");
@@ -423,9 +427,10 @@ mod tests {
         });
 
         let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+        let (state_tx, _state_rx) = tokio::sync::watch::channel(PlayerState::Stopped);
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            connect_and_run(&cfg, &client, &song_reset),
+            connect_and_run(&cfg, &client, &song_reset, &state_tx),
         )
         .await;
         assert!(result.is_ok(), "connect_and_run should finish once the server closes");
@@ -462,9 +467,10 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         });
 
+        let (state_tx, _state_rx) = tokio::sync::watch::channel(PlayerState::Stopped);
         let notified = song_reset.notified();
         tokio::pin!(notified);
-        let run = connect_and_run(&cfg, &client, &song_reset);
+        let run = connect_and_run(&cfg, &client, &song_reset, &state_tx);
         tokio::pin!(run);
 
         let saw_notification = tokio::select! {

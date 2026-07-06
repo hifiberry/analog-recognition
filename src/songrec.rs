@@ -1,6 +1,7 @@
 use crate::audiocontrol::AudioControlClient;
 use crate::config::SongrecConfig;
 use crate::settings::SettingsClient;
+use crate::vu_meter::PlayerState;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -22,6 +23,18 @@ pub fn unknown_track() -> RecognizedTrack {
         artist: "Unknown artist".to_string(),
         album: None,
         genre: None,
+    }
+}
+
+/// Decide whether to publish the Unknown placeholder while recognition is
+/// disabled. `playing` = VU reports playback; `already_published` = we already
+/// published Unknown for the current playing stretch. Returns
+/// (should_publish_now, new_already_published_flag).
+pub fn unknown_publish_decision(playing: bool, already_published: bool) -> (bool, bool) {
+    if playing {
+        if already_published { (false, true) } else { (true, true) }
+    } else {
+        (false, false)
     }
 }
 
@@ -93,17 +106,27 @@ pub async fn run_recognition_task(
     client: &AudioControlClient,
     song_reset: &Arc<Notify>,
     poll: Duration,
+    state_rx: &tokio::sync::watch::Receiver<PlayerState>,
 ) -> ! {
     let mut backoff = Duration::from_secs(1);
+    let mut unknown_published = false;
     loop {
         if !settings.songrec_enabled().await {
-            // Disabled: publish the placeholder track and poll until re-enabled.
-            if let Err(e) = client.send_song_changed(&unknown_track()).await {
-                log::warn!("failed to publish unknown track: {e}");
+            // Disabled: publish the placeholder track only while the VU
+            // meter reports playback, and only once per playing stretch.
+            let playing = *state_rx.borrow() == PlayerState::Playing;
+            let (should_publish, new_flag) =
+                unknown_publish_decision(playing, unknown_published);
+            if should_publish {
+                if let Err(e) = client.send_song_changed(&unknown_track()).await {
+                    log::warn!("failed to publish unknown track: {e}");
+                }
             }
+            unknown_published = new_flag;
             tokio::time::sleep(poll).await;
             continue;
         }
+        unknown_published = false;
         tokio::select! {
             result = run_songrec_once(cfg, client, song_reset) => {
                 match result {
@@ -419,5 +442,25 @@ mod tests {
         assert_eq!(t.artist, "Unknown artist");
         assert_eq!(t.title, "Unknown song");
         assert_eq!(t.album, None);
+    }
+
+    #[test]
+    fn unknown_publish_decision_publishes_once_while_playing() {
+        assert_eq!(unknown_publish_decision(true, false), (true, true));
+    }
+
+    #[test]
+    fn unknown_publish_decision_does_not_repeat_while_still_playing() {
+        assert_eq!(unknown_publish_decision(true, true), (false, true));
+    }
+
+    #[test]
+    fn unknown_publish_decision_clears_flag_once_stopped() {
+        assert_eq!(unknown_publish_decision(false, true), (false, false));
+    }
+
+    #[test]
+    fn unknown_publish_decision_stays_quiet_while_stopped() {
+        assert_eq!(unknown_publish_decision(false, false), (false, false));
     }
 }
