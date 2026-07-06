@@ -22,17 +22,19 @@ async fn main() -> anyhow::Result<()> {
         cfg.audiocontrol.base_url.clone(),
         cfg.audiocontrol.player_name.clone(),
     ));
+    let song_reset = Arc::new(tokio::sync::Notify::new());
 
     let state_client = client.clone();
     let vu_cfg = cfg.vu_meter.clone();
+    let state_song_reset = song_reset.clone();
     let state_handle = tokio::spawn(async move {
-        vu_meter::run_state_task(&vu_cfg, &state_client).await
+        vu_meter::run_state_task(&vu_cfg, &state_client, &state_song_reset).await
     });
 
     let rec_client = client.clone();
     let songrec_cfg = cfg.songrec.clone();
     let rec_handle = tokio::spawn(async move {
-        songrec::run_recognition_task(&songrec_cfg, &rec_client).await
+        songrec::run_recognition_task(&songrec_cfg, &rec_client, &song_reset).await
     });
 
     let _ = tokio::join!(state_handle, rec_handle);

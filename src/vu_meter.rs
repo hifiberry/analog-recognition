@@ -98,10 +98,16 @@ impl PlaybackStateMachine {
 
 use crate::audiocontrol::AudioControlClient;
 use futures_util::StreamExt;
+use std::sync::Arc;
+use tokio::sync::Notify;
 
-pub async fn run_state_task(cfg: &VuMeterConfig, client: &AudioControlClient) -> ! {
+pub async fn run_state_task(
+    cfg: &VuMeterConfig,
+    client: &AudioControlClient,
+    song_reset: &Arc<Notify>,
+) -> ! {
     loop {
-        if let Err(e) = connect_and_run(cfg, client).await {
+        if let Err(e) = connect_and_run(cfg, client, song_reset).await {
             log::warn!("vu-meter connection lost: {e}");
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -111,6 +117,7 @@ pub async fn run_state_task(cfg: &VuMeterConfig, client: &AudioControlClient) ->
 pub async fn connect_and_run(
     cfg: &VuMeterConfig,
     client: &AudioControlClient,
+    song_reset: &Arc<Notify>,
 ) -> anyhow::Result<()> {
     let (ws_stream, _) = tokio_tungstenite::connect_async(&cfg.ws_url).await?;
     let (_, mut read) = ws_stream.split();
@@ -131,6 +138,13 @@ pub async fn connect_and_run(
                         if let Err(e) = client.send_song_cleared().await {
                             log::warn!("failed to clear song: {e}");
                         }
+                        // Tell the recognition task to forget its last-seen
+                        // title: the display is now blank, so the next
+                        // match should be re-announced even if it's the
+                        // same song that was playing before (e.g. a brief
+                        // pause-and-resume, or a quiet passage that dipped
+                        // below the level threshold).
+                        song_reset.notify_one();
                     }
                 }
             }
@@ -349,9 +363,10 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         });
 
+        let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            connect_and_run(&cfg, &client),
+            connect_and_run(&cfg, &client, &song_reset),
         )
         .await;
         assert!(result.is_ok(), "connect_and_run should finish once the server closes");
@@ -407,12 +422,57 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         });
 
+        let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            connect_and_run(&cfg, &client),
+            connect_and_run(&cfg, &client, &song_reset),
         )
         .await;
         assert!(result.is_ok(), "connect_and_run should finish once the server closes");
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn notifies_song_reset_when_transitioning_to_stopped() {
+        let ac_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&ac_server)
+            .await;
+        let client = AudioControlClient::new(ac_server.uri(), "analog".to_string());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = VuMeterConfig {
+            ws_url: format!("ws://{addr}"),
+            start_threshold: 40,
+            stop_threshold: 40,
+            start_debounce_secs: 0,
+            stop_debounce_secs: 0,
+        };
+        let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            ws.send(Message::Binary(vec![90, 0, 90, 0, 0, 2])).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            ws.send(Message::Binary(vec![0, 0, 0, 0, 0, 2])).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        });
+
+        let notified = song_reset.notified();
+        tokio::pin!(notified);
+        let run = connect_and_run(&cfg, &client, &song_reset);
+        tokio::pin!(run);
+
+        let saw_notification = tokio::select! {
+            _ = &mut notified => true,
+            _ = &mut run => false,
+        };
+        assert!(saw_notification, "expected a song-reset notification on the Stopped transition");
+
         server_task.await.unwrap();
     }
 }

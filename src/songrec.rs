@@ -1,7 +1,9 @@
 use crate::audiocontrol::AudioControlClient;
 use crate::config::SongrecConfig;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::Notify;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecognizedTrack {
@@ -62,12 +64,25 @@ impl Deduper {
             true
         }
     }
+
+    /// Forgets the last-seen title, so the next match is treated as new even
+    /// if it's the same title as before. Used when AudioControl's displayed
+    /// song has been cleared out-of-band (e.g. by a Stopped transition), so
+    /// a still-ongoing (or resumed) track gets re-announced instead of
+    /// staying suppressed by a title the display no longer reflects.
+    pub fn reset(&mut self) {
+        self.last_title = None;
+    }
 }
 
-pub async fn run_recognition_task(cfg: &SongrecConfig, client: &AudioControlClient) -> ! {
+pub async fn run_recognition_task(
+    cfg: &SongrecConfig,
+    client: &AudioControlClient,
+    song_reset: &Arc<Notify>,
+) -> ! {
     let mut backoff = std::time::Duration::from_secs(1);
     loop {
-        match run_songrec_once(cfg, client).await {
+        match run_songrec_once(cfg, client, song_reset).await {
             Ok(()) => log::warn!("songrec exited, restarting"),
             Err(e) => log::warn!("songrec failed: {e}, restarting"),
         }
@@ -76,7 +91,11 @@ pub async fn run_recognition_task(cfg: &SongrecConfig, client: &AudioControlClie
     }
 }
 
-pub async fn run_songrec_once(cfg: &SongrecConfig, client: &AudioControlClient) -> anyhow::Result<()> {
+pub async fn run_songrec_once(
+    cfg: &SongrecConfig,
+    client: &AudioControlClient,
+    song_reset: &Arc<Notify>,
+) -> anyhow::Result<()> {
     let mut child = Command::new(&cfg.binary)
         .arg("listen")
         .arg("-d")
@@ -96,15 +115,24 @@ pub async fn run_songrec_once(cfg: &SongrecConfig, client: &AudioControlClient) 
     let mut lines = BufReader::new(stdout).lines();
     let mut dedup = Deduper::new();
 
-    while let Some(line) = lines.next_line().await? {
-        if let Some(track) = parse_songrec_line(&line) {
-            if dedup.should_emit(&track) {
-                if let Err(e) = client.send_song_changed(&track).await {
-                    log::warn!("failed to send song_changed: {e}");
+    loop {
+        tokio::select! {
+            line = lines.next_line() => {
+                let Some(line) = line? else { break };
+                if let Some(track) = parse_songrec_line(&line) {
+                    if dedup.should_emit(&track) {
+                        if let Err(e) = client.send_song_changed(&track).await {
+                            log::warn!("failed to send song_changed: {e}");
+                        }
+                    }
+                } else {
+                    log::debug!("songrec: {line}");
                 }
             }
-        } else {
-            log::debug!("songrec: {line}");
+            _ = song_reset.notified() => {
+                log::debug!("song display was cleared externally, resetting dedup state");
+                dedup.reset();
+            }
         }
     }
 
@@ -154,9 +182,54 @@ mod tests {
             .await;
 
         let client = AudioControlClient::new(server.uri(), "analog".to_string());
+        let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            run_songrec_once(&fixture_cfg(), &client),
+            run_songrec_once(&fixture_cfg(), &client, &song_reset),
+        )
+        .await;
+        assert!(result.is_ok(), "run_songrec_once should return once the fixture script exits");
+        result.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn reemits_same_title_after_a_reset_notification() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({
+                "type": "song_changed",
+                "song": { "title": "Song A", "artist": "Artist A" }
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(2) // once before the reset, once again after it
+            .mount(&server)
+            .await;
+
+        let client = AudioControlClient::new(server.uri(), "analog".to_string());
+        let cfg = SongrecConfig {
+            device: "unused".to_string(),
+            request_interval_secs: 10,
+            binary: concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/fake_songrec_repeat_slow.sh"
+            )
+            .to_string(),
+        };
+        let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+
+        let reset_trigger = song_reset.clone();
+        tokio::spawn(async move {
+            // Fires between the fixture's 2nd and 3rd identical print
+            // (which are 0.2s apart), so only the 3rd print should be
+            // re-emitted as "new".
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            reset_trigger.notify_one();
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_songrec_once(&cfg, &client, &song_reset),
         )
         .await;
         assert!(result.is_ok(), "run_songrec_once should return once the fixture script exits");
@@ -173,10 +246,11 @@ mod tests {
             .mount(&server)
             .await;
         let client = AudioControlClient::new(server.uri(), "analog".to_string());
+        let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            run_songrec_once(&fixture_cfg(), &client),
+            run_songrec_once(&fixture_cfg(), &client, &song_reset),
         )
         .await;
         assert!(result.is_ok(), "run_songrec_once should return once the fixture script exits");
@@ -184,7 +258,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            run_songrec_once(&fixture_cfg(), &client),
+            run_songrec_once(&fixture_cfg(), &client, &song_reset),
         )
         .await;
         assert!(result.is_ok(), "run_songrec_once should return once the fixture script exits");
@@ -283,5 +357,14 @@ mod tests {
         assert!(d.should_emit(&track("B")));
         assert!(!d.should_emit(&track("B")));
         assert!(d.should_emit(&track("A"))); // back to A after B is a real change too
+    }
+
+    #[test]
+    fn reset_allows_the_same_title_to_be_re_emitted() {
+        let mut d = Deduper::new();
+        assert!(d.should_emit(&track("A")));
+        assert!(!d.should_emit(&track("A")));
+        d.reset();
+        assert!(d.should_emit(&track("A"))); // same title as before reset, but now a "new" match
     }
 }
