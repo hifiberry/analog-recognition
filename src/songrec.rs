@@ -1,3 +1,8 @@
+use crate::audiocontrol::AudioControlClient;
+use crate::config::SongrecConfig;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecognizedTrack {
     pub title: String,
@@ -59,9 +64,118 @@ impl Deduper {
     }
 }
 
+pub async fn run_recognition_task(cfg: &SongrecConfig, client: &AudioControlClient) -> ! {
+    let mut backoff = std::time::Duration::from_secs(1);
+    loop {
+        match run_songrec_once(cfg, client).await {
+            Ok(()) => log::warn!("songrec exited, restarting"),
+            Err(e) => log::warn!("songrec failed: {e}, restarting"),
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(std::time::Duration::from_secs(30));
+    }
+}
+
+pub async fn run_songrec_once(cfg: &SongrecConfig, client: &AudioControlClient) -> anyhow::Result<()> {
+    let mut child = Command::new(&cfg.binary)
+        .arg("listen")
+        .arg("-d")
+        .arg(&cfg.device)
+        .arg("--json")
+        .arg("--disable-mpris")
+        .arg("-i")
+        .arg(cfg.request_interval_secs.to_string())
+        .stdout(std::process::Stdio::piped())
+        .spawn()?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("songrec child has no stdout"))?;
+    let mut lines = BufReader::new(stdout).lines();
+    let mut dedup = Deduper::new();
+
+    while let Some(line) = lines.next_line().await? {
+        if let Some(track) = parse_songrec_line(&line) {
+            if dedup.should_emit(&track) {
+                if let Err(e) = client.send_song_changed(&track).await {
+                    log::warn!("failed to send song_changed: {e}");
+                }
+            }
+        } else {
+            log::debug!("songrec: {line}");
+        }
+    }
+
+    child.wait().await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audiocontrol::AudioControlClient;
+    use crate::config::SongrecConfig;
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn fixture_cfg() -> SongrecConfig {
+        SongrecConfig {
+            device: "unused".to_string(),
+            request_interval_secs: 10,
+            binary: concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_songrec.sh")
+                .to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn emits_song_changed_once_per_distinct_title() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({
+                "type": "song_changed",
+                "song": { "title": "Song A", "artist": "Artist A" }
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1) // NOT 2, even though the fixture prints "Song A" twice
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({
+                "type": "song_changed",
+                "song": { "title": "Song B", "artist": "Artist B" }
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = AudioControlClient::new(server.uri(), "analog".to_string());
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_songrec_once(&fixture_cfg(), &client),
+        )
+        .await;
+        assert!(result.is_ok(), "run_songrec_once should return once the fixture script exits");
+        result.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn can_be_run_again_after_the_child_exits() {
+        // This is the property run_recognition_task's restart loop depends on.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let client = AudioControlClient::new(server.uri(), "analog".to_string());
+
+        run_songrec_once(&fixture_cfg(), &client).await.unwrap();
+        run_songrec_once(&fixture_cfg(), &client).await.unwrap();
+    }
 
     fn track(title: &str) -> RecognizedTrack {
         RecognizedTrack {
