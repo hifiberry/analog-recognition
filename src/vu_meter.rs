@@ -29,6 +29,7 @@ pub fn parse_level_frame(bytes: &[u8; 6]) -> LevelFrame {
 
 use crate::config::VuMeterConfig;
 use std::time::{Duration, Instant};
+use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayerState {
@@ -93,6 +94,44 @@ impl PlaybackStateMachine {
             }
         }
     }
+}
+
+use crate::audiocontrol::AudioControlClient;
+use futures_util::StreamExt;
+
+pub async fn run_state_task(cfg: &VuMeterConfig, client: &AudioControlClient) -> ! {
+    loop {
+        if let Err(e) = connect_and_run(cfg, client).await {
+            log::warn!("vu-meter connection lost: {e}");
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+pub async fn connect_and_run(
+    cfg: &VuMeterConfig,
+    client: &AudioControlClient,
+) -> anyhow::Result<()> {
+    let (ws_stream, _) = tokio_tungstenite::connect_async(&cfg.ws_url).await?;
+    let (_, mut read) = ws_stream.split();
+    let mut sm = PlaybackStateMachine::new(cfg);
+
+    while let Some(msg) = read.next().await {
+        let msg = msg?;
+        if let Message::Binary(data) = msg {
+            if data.len() >= 6 {
+                let mut arr = [0u8; 6];
+                arr.copy_from_slice(&data[0..6]);
+                let frame = parse_level_frame(&arr);
+                if let Some(new_state) = sm.on_level(frame.level(), Instant::now()) {
+                    if let Err(e) = client.send_state_changed(new_state).await {
+                        log::warn!("failed to send state_changed: {e}");
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -255,5 +294,62 @@ mod tests {
             Some(PlayerState::Playing)
         );
         assert_eq!(sm.current(), PlayerState::Playing);
+    }
+
+    use crate::audiocontrol::AudioControlClient;
+    use futures_util::SinkExt;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn reports_playing_then_stopped_from_real_frames() {
+        let ac_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({ "type": "state_changed", "state": "playing" })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&ac_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({ "type": "state_changed", "state": "stopped" })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&ac_server)
+            .await;
+        let client = AudioControlClient::new(ac_server.uri(), "analog".to_string());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Fast debounces so the test runs in well under a second of wall-clock time.
+        let cfg = VuMeterConfig {
+            ws_url: format!("ws://{addr}"),
+            start_threshold: 40,
+            stop_threshold: 40,
+            start_debounce_secs: 0, // any level above threshold flips immediately
+            stop_debounce_secs: 0,
+        };
+
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            // Loud frame -> Playing
+            ws.send(Message::Binary(vec![90, 0, 90, 0, 0, 2])).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            // Silent frame -> Stopped
+            ws.send(Message::Binary(vec![0, 0, 0, 0, 0, 2])).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            connect_and_run(&cfg, &client),
+        )
+        .await;
+        assert!(result.is_ok(), "connect_and_run should finish once the server closes");
+        server_task.await.unwrap();
     }
 }
