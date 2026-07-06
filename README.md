@@ -7,31 +7,27 @@ independent of songrec's sparse recognition cadence. Publishes both into
 [AudioControl](https://github.com/hifiberry/acr) as a generic player named
 `analog`.
 
-## Required AudioControl configuration
+## HiFiBerryOS plugin registration
 
-Add the following to the `players` list in
-`/etc/audiocontrol/audiocontrol.json` (not applied automatically by this
-package, to avoid clobbering an operator-managed config file):
+Registration with AudioControl is automatic: the package's `postinst`
+installs an ACR `players.d` drop-in at
+`/etc/audiocontrol/players.d/analog.json` (removed again by `postrm` on
+uninstall), so there's no manual edit of `audiocontrol.json` needed anymore.
 
-```json
-{
-  "generic": {
-    "name": "analog",
-    "display_name": "Analog Input",
-    "enable": true,
-    "supports_api_events": true,
-    "capabilities": [],
-    "initial_state": "stopped"
-  }
-}
-```
+The same `postinst` also registers the plugin with the HiFiBerryOS Web UI
+(`/etc/hifiberry/players.d/analog.json` + icon) and grants the plugin's
+systemd service the necessary permissions via a `configserver` drop-in
+(`/etc/configserver/conf.d/analog-recognition.json`).
 
-The outer key (`"generic"`) is the player type tag itself, not an arbitrary
-instance name — this matches how the other entries in this same config file
-(`mpd`, `raat`, etc.) are keyed.
+### "Recognize tracks" setting
 
-`capabilities` is intentionally empty: this player reports real-world state,
-it isn't something a user can drive via play/pause/next commands.
+The Web UI exposes a "Recognize tracks" toggle for this player
+(ConfigDB key `player.analog-recognition.songrec_enabled`, default `on`).
+When switched off, the service stops invoking `songrec` and instead
+publishes `"Unknown artist"` / `"Unknown song"` for the currently playing
+track, while play/stop state (from the VU meter) keeps working as normal.
+The service polls this setting from the configurator (see
+`[configurator]` below) rather than requiring a restart.
 
 ## Configuration
 
@@ -46,6 +42,13 @@ sensible defaults). Key values:
 - `vu_meter.stop_debounce_secs` — how long the level must stay below
   threshold before reporting Stopped (default 20s, to survive normal
   inter-track pauses without flapping).
+- `configurator.base_url` — base URL of the configurator ConfigDB API used
+  to read the "Recognize tracks" setting (default
+  `http://localhost:1081/api/v1`).
+- `configurator.songrec_enabled_key` — ConfigDB key backing the toggle
+  (default `player.analog-recognition.songrec_enabled`).
+- `configurator.setting_poll_secs` — how often the setting is re-read from
+  the configurator (default 10s).
 
 ## Building
 

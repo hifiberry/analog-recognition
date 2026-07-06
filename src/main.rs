@@ -1,7 +1,4 @@
-mod audiocontrol;
-mod config;
-mod songrec;
-mod vu_meter;
+use analog_recognition::{audiocontrol, config, settings, songrec, vu_meter};
 
 use std::sync::Arc;
 
@@ -23,18 +20,34 @@ async fn main() -> anyhow::Result<()> {
         cfg.audiocontrol.player_name.clone(),
     ));
     let song_reset = Arc::new(tokio::sync::Notify::new());
+    let (state_tx, state_rx) = tokio::sync::watch::channel(vu_meter::PlayerState::Stopped);
 
     let state_client = client.clone();
     let vu_cfg = cfg.vu_meter.clone();
     let state_song_reset = song_reset.clone();
     let state_handle = tokio::spawn(async move {
-        vu_meter::run_state_task(&vu_cfg, &state_client, &state_song_reset).await
+        vu_meter::run_state_task(&vu_cfg, &state_client, &state_song_reset, &state_tx).await
     });
 
+    let settings = Arc::new(settings::SettingsClient::new(
+        cfg.configurator.base_url.clone(),
+        cfg.configurator.songrec_enabled_key.clone(),
+    ));
+    let poll = std::time::Duration::from_secs(cfg.configurator.setting_poll_secs);
+
     let rec_client = client.clone();
+    let rec_settings = settings.clone();
     let songrec_cfg = cfg.songrec.clone();
     let rec_handle = tokio::spawn(async move {
-        songrec::run_recognition_task(&songrec_cfg, &rec_client, &song_reset).await
+        songrec::run_recognition_task(
+            &songrec_cfg,
+            &rec_settings,
+            &rec_client,
+            &song_reset,
+            poll,
+            &state_rx,
+        )
+        .await
     });
 
     let _ = tokio::join!(state_handle, rec_handle);

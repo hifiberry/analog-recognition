@@ -1,6 +1,9 @@
 use crate::audiocontrol::AudioControlClient;
 use crate::config::SongrecConfig;
+use crate::settings::SettingsClient;
+use crate::vu_meter::PlayerState;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Notify;
@@ -11,6 +14,28 @@ pub struct RecognizedTrack {
     pub artist: String,
     pub album: Option<String>,
     pub genre: Option<String>,
+}
+
+/// The placeholder track published when songrec recognition is disabled.
+pub fn unknown_track() -> RecognizedTrack {
+    RecognizedTrack {
+        title: "Unknown song".to_string(),
+        artist: "Unknown artist".to_string(),
+        album: None,
+        genre: None,
+    }
+}
+
+/// Decide whether to publish the Unknown placeholder while recognition is
+/// disabled. `playing` = VU reports playback; `already_published` = we already
+/// published Unknown for the current playing stretch. Returns
+/// (should_publish_now, new_already_published_flag).
+pub fn unknown_publish_decision(playing: bool, already_published: bool) -> (bool, bool) {
+    if playing {
+        if already_published { (false, true) } else { (true, true) }
+    } else {
+        (false, false)
+    }
 }
 
 pub fn parse_songrec_line(line: &str) -> Option<RecognizedTrack> {
@@ -77,17 +102,60 @@ impl Deduper {
 
 pub async fn run_recognition_task(
     cfg: &SongrecConfig,
+    settings: &SettingsClient,
     client: &AudioControlClient,
     song_reset: &Arc<Notify>,
+    poll: Duration,
+    state_rx: &tokio::sync::watch::Receiver<PlayerState>,
 ) -> ! {
-    let mut backoff = std::time::Duration::from_secs(1);
+    let mut backoff = Duration::from_secs(1);
+    let mut unknown_published = false;
     loop {
-        match run_songrec_once(cfg, client, song_reset).await {
-            Ok(()) => log::warn!("songrec exited, restarting"),
-            Err(e) => log::warn!("songrec failed: {e}, restarting"),
+        if !settings.songrec_enabled().await {
+            // Disabled: publish the placeholder track only while the VU
+            // meter reports playback, and only once per playing stretch.
+            let playing = *state_rx.borrow() == PlayerState::Playing;
+            let (should_publish, new_flag) =
+                unknown_publish_decision(playing, unknown_published);
+            if should_publish {
+                if let Err(e) = client.send_song_changed(&unknown_track()).await {
+                    log::warn!("failed to publish unknown track: {e}");
+                }
+            }
+            unknown_published = new_flag;
+            tokio::time::sleep(poll).await;
+            continue;
         }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(std::time::Duration::from_secs(30));
+        unknown_published = false;
+        tokio::select! {
+            result = run_songrec_once(cfg, client, song_reset) => {
+                match result {
+                    Ok(()) => log::warn!("songrec exited, restarting"),
+                    Err(e) => log::warn!("songrec failed: {e}, restarting"),
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+            }
+            _ = wait_until_disabled(settings, poll) => {
+                // The run_songrec_once future is dropped here; its child is
+                // killed via kill_on_drop. Loop re-checks and enters the
+                // disabled branch above.
+                log::info!("songrec disabled via setting, stopping recognition");
+                backoff = Duration::from_secs(1);
+            }
+        }
+    }
+}
+
+/// Resolves once the songrec_enabled setting reads false.
+async fn wait_until_disabled(settings: &SettingsClient, poll: Duration) {
+    let mut interval = tokio::time::interval(poll);
+    interval.tick().await; // consume the immediate first tick
+    loop {
+        interval.tick().await;
+        if !settings.songrec_enabled().await {
+            return;
+        }
     }
 }
 
@@ -366,5 +434,33 @@ mod tests {
         assert!(!d.should_emit(&track("A")));
         d.reset();
         assert!(d.should_emit(&track("A"))); // same title as before reset, but now a "new" match
+    }
+
+    #[test]
+    fn unknown_track_has_placeholder_fields() {
+        let t = unknown_track();
+        assert_eq!(t.artist, "Unknown artist");
+        assert_eq!(t.title, "Unknown song");
+        assert_eq!(t.album, None);
+    }
+
+    #[test]
+    fn unknown_publish_decision_publishes_once_while_playing() {
+        assert_eq!(unknown_publish_decision(true, false), (true, true));
+    }
+
+    #[test]
+    fn unknown_publish_decision_does_not_repeat_while_still_playing() {
+        assert_eq!(unknown_publish_decision(true, true), (false, true));
+    }
+
+    #[test]
+    fn unknown_publish_decision_clears_flag_once_stopped() {
+        assert_eq!(unknown_publish_decision(false, true), (false, false));
+    }
+
+    #[test]
+    fn unknown_publish_decision_stays_quiet_while_stopped() {
+        assert_eq!(unknown_publish_decision(false, false), (false, false));
     }
 }
