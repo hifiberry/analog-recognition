@@ -1,0 +1,8 @@
+hifiberry-analog-recognition (0.1.0) stable; urgency=medium
+
+  * Initial release
+  * songrec-based track recognition on the analog input
+  * VU-meter-based play/stop state, independent of recognition cadence
+  * Publishes both into AudioControl as a generic player ("analog")
+
+ -- HiFiBerry <support@hifiberry.com>  Sun, 05 Jul 2026 20:00:00 +0000

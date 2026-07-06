@@ -1,0 +1,19 @@
+Source: hifiberry-analog-recognition
+Section: sound
+Priority: optional
+Maintainer: HiFiBerry <info@hifiberry.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.0
+Homepage: https://github.com/hifiberry/hifiberry-os
+Vcs-Git: https://github.com/hifiberry/analog-recognition.git
+Vcs-Browser: https://github.com/hifiberry/analog-recognition
+
+Package: hifiberry-analog-recognition
+Architecture: arm64
+Depends: ${shlibs:Depends}, ${misc:Depends},
+         songrec
+Description: HiFiBerry analog input recognition service
+ Identifies tracks playing on an analog (e.g. turntable/RIAA) input using
+ songrec, and reports accurate play/stop state from the VU-meter service's
+ real-time signal level. Publishes both into AudioControl as a generic
+ player named "analog".

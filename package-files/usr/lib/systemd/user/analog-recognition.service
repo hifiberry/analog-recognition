@@ -1,0 +1,13 @@
+[Unit]
+Description=HiFiBerry Analog Input Recognition
+After=pipewire.service vu-meter.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/bin/analog-recognition
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
