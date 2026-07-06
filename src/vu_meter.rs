@@ -127,6 +127,11 @@ pub async fn connect_and_run(
                     if let Err(e) = client.send_state_changed(new_state).await {
                         log::warn!("failed to send state_changed: {e}");
                     }
+                    if new_state == PlayerState::Stopped {
+                        if let Err(e) = client.send_song_cleared().await {
+                            log::warn!("failed to clear song: {e}");
+                        }
+                    }
                 }
             }
         }
@@ -340,6 +345,64 @@ mod tests {
             ws.send(Message::Binary(vec![90, 0, 90, 0, 0, 2])).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             // Silent frame -> Stopped
+            ws.send(Message::Binary(vec![0, 0, 0, 0, 0, 2])).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            connect_and_run(&cfg, &client),
+        )
+        .await;
+        assert!(result.is_ok(), "connect_and_run should finish once the server closes");
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn clears_song_when_transitioning_to_stopped() {
+        let ac_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({ "type": "state_changed", "state": "playing" })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&ac_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({ "type": "state_changed", "state": "stopped" })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&ac_server)
+            .await;
+        // The critical assertion: a song_changed with no "song" field must be
+        // sent alongside the Stopped transition, clearing AudioControl's
+        // last-displayed track rather than leaving it to linger indefinitely
+        // (AudioControl's own active-player tracking never does this itself).
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({ "type": "song_changed" })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&ac_server)
+            .await;
+        let client = AudioControlClient::new(ac_server.uri(), "analog".to_string());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = VuMeterConfig {
+            ws_url: format!("ws://{addr}"),
+            start_threshold: 40,
+            stop_threshold: 40,
+            start_debounce_secs: 0,
+            stop_debounce_secs: 0,
+        };
+
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            ws.send(Message::Binary(vec![90, 0, 90, 0, 0, 2])).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             ws.send(Message::Binary(vec![0, 0, 0, 0, 0, 2])).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         });

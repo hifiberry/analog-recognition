@@ -45,6 +45,17 @@ impl AudioControlClient {
         self.post_update(&body).await
     }
 
+    /// Clears the currently-displayed song in AudioControl. Sent alongside a
+    /// Stopped state transition: AudioControl's generic player only clears
+    /// its song when a song_changed event omits the `song` field entirely
+    /// (its own state_changed handling never touches song info), so without
+    /// this call the last-recognized track lingers in `/api/now-playing`
+    /// even after playback has genuinely stopped.
+    pub async fn send_song_cleared(&self) -> anyhow::Result<()> {
+        let body = serde_json::json!({ "type": "song_changed" });
+        self.post_update(&body).await
+    }
+
     async fn post_update(&self, body: &serde_json::Value) -> anyhow::Result<()> {
         let resp = self.http.post(self.update_url()).json(body).send().await?;
         if !resp.status().is_success() {
@@ -133,6 +144,23 @@ mod tests {
             genre: None,
         };
         client.send_song_changed(&track).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sends_song_cleared_with_no_song_field() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({
+                "type": "song_changed"
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = AudioControlClient::new(server.uri(), "analog".to_string());
+        client.send_song_cleared().await.unwrap();
     }
 
     #[tokio::test]
