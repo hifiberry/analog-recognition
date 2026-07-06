@@ -7,6 +7,8 @@ pub struct Config {
     pub vu_meter: VuMeterConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub configurator: ConfiguratorConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -45,6 +47,36 @@ impl Default for LoggingConfig {
     fn default() -> Self {
         LoggingConfig {
             level: default_log_level(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConfiguratorConfig {
+    #[serde(default = "default_configurator_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_songrec_enabled_key")]
+    pub songrec_enabled_key: String,
+    #[serde(default = "default_setting_poll_secs")]
+    pub setting_poll_secs: u64,
+}
+
+fn default_configurator_base_url() -> String {
+    "http://localhost:1081/api/v1".to_string()
+}
+fn default_songrec_enabled_key() -> String {
+    "player.analog-recognition.songrec_enabled".to_string()
+}
+fn default_setting_poll_secs() -> u64 {
+    10
+}
+
+impl Default for ConfiguratorConfig {
+    fn default() -> Self {
+        ConfiguratorConfig {
+            base_url: default_configurator_base_url(),
+            songrec_enabled_key: default_songrec_enabled_key(),
+            setting_poll_secs: default_setting_poll_secs(),
         }
     }
 }
@@ -113,5 +145,62 @@ mod tests {
         "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.logging.level, "info");
+    }
+
+    #[test]
+    fn configurator_defaults_when_section_omitted() {
+        let toml_str = r#"
+            [audiocontrol]
+            base_url = "http://localhost:1080/api"
+            player_name = "analog"
+
+            [songrec]
+            device = "riaa.monitor"
+            request_interval_secs = 10
+            binary = "songrec"
+
+            [vu_meter]
+            ws_url = "ws://localhost:2717/api/v1/levels"
+            start_threshold = 40
+            stop_threshold = 40
+            start_debounce_secs = 1
+            stop_debounce_secs = 20
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.configurator.base_url, "http://localhost:1081/api/v1");
+        assert_eq!(
+            cfg.configurator.songrec_enabled_key,
+            "player.analog-recognition.songrec_enabled"
+        );
+        assert_eq!(cfg.configurator.setting_poll_secs, 10);
+    }
+
+    #[test]
+    fn parses_configurator_section() {
+        let toml_str = r#"
+            [audiocontrol]
+            base_url = "http://localhost:1080/api"
+            player_name = "analog"
+
+            [songrec]
+            device = "riaa.monitor"
+            request_interval_secs = 10
+            binary = "songrec"
+
+            [vu_meter]
+            ws_url = "ws://localhost:2717/api/v1/levels"
+            start_threshold = 40
+            stop_threshold = 40
+            start_debounce_secs = 1
+            stop_debounce_secs = 20
+
+            [configurator]
+            base_url = "http://example:9/api/v1"
+            songrec_enabled_key = "player.analog-recognition.songrec_enabled"
+            setting_poll_secs = 5
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.configurator.base_url, "http://example:9/api/v1");
+        assert_eq!(cfg.configurator.setting_poll_secs, 5);
     }
 }
