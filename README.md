@@ -15,8 +15,7 @@ package, to avoid clobbering an operator-managed config file):
 
 ```json
 {
-  "analog": {
-    "type": "generic",
+  "generic": {
     "name": "analog",
     "display_name": "Analog Input",
     "enable": true,
@@ -26,6 +25,10 @@ package, to avoid clobbering an operator-managed config file):
   }
 }
 ```
+
+The outer key (`"generic"`) is the player type tag itself, not an arbitrary
+instance name — this matches how the other entries in this same config file
+(`mpd`, `raat`, etc.) are keyed.
 
 `capabilities` is intentionally empty: this player reports real-world state,
 it isn't something a user can drive via play/pause/next commands.

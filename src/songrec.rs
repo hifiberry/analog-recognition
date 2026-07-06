@@ -86,6 +86,7 @@ pub async fn run_songrec_once(cfg: &SongrecConfig, client: &AudioControlClient) 
         .arg("-i")
         .arg(cfg.request_interval_secs.to_string())
         .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()?;
 
     let stdout = child
