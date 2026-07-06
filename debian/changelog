@@ -1,3 +1,14 @@
+hifiberry-analog-recognition (0.2.1) stable; urgency=medium
+
+  * Only start the service on cards with an analog input. Gate the systemd
+    user service with ExecCondition on `config-soundcard --input-channels`,
+    so output-only and digital-only (S/PDIF, e.g. Digi+) cards where
+    input_channels=0 skip the service cleanly instead of running with no
+    capture source.
+  * Depend on hifiberry-configurator (provides config-soundcard).
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 06 Jul 2026 14:00:00 +0000
+
 hifiberry-analog-recognition (0.2.0) stable; urgency=medium
 
   * Register as a HiFiBerryOS player plugin (webui players.d + configserver
