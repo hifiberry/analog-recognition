@@ -4,11 +4,11 @@ After=pipewire.service vu-meter.service
 
 [Service]
 Type=simple
-# Only run on sound cards that expose an analog input (an ADC). The
-# configurator reports input_channels=0 for output-only and digital-only
-# (S/PDIF) cards such as the Digi+, so this cleanly skips the service there
-# without marking it failed.
-ExecCondition=/bin/sh -c 'ic=$(config-soundcard --input-channels 2>/dev/null); case "$ic" in ""|*[!0-9]*) exit 1;; esac; [ "$ic" -gt 0 ]'
+# Only run on sound cards that expose an analog input (an ADC). --has-input
+# exits 0 when the card has input channels and 1 otherwise (output-only and
+# digital-only S/PDIF cards such as the Digi+ report input_channels=0), so
+# this cleanly skips the service on those cards without marking it failed.
+ExecCondition=/usr/bin/config-soundcard --has-input
 ExecStartPre=/bin/sleep 2
 ExecStart=/usr/bin/analog-recognition
 Restart=on-failure

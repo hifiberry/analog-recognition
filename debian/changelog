@@ -1,3 +1,11 @@
+hifiberry-analog-recognition (0.2.2) stable; urgency=medium
+
+  * Use `config-soundcard --has-input` in the service ExecCondition instead
+    of shell pattern-matching the `--input-channels` count. Requires
+    hifiberry-configurator (>= 2.13.18).
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 06 Jul 2026 15:10:00 +0000
+
 hifiberry-analog-recognition (0.2.1) stable; urgency=medium
 
   * Only start the service on cards with an analog input. Gate the systemd

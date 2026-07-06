@@ -16,7 +16,7 @@ Depends: ${shlibs:Depends}, ${misc:Depends},
          songrec,
          hifiberry-audiocontrol,
          hifiberry-vu-meter,
-         hifiberry-configurator
+         hifiberry-configurator (>= 2.13.18)
 Description: HiFiBerry analog input recognition service
  Identifies tracks playing on an analog (e.g. turntable/RIAA) input using
  songrec, and reports accurate play/stop state from the VU-meter service's
