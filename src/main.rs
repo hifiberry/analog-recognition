@@ -1,7 +1,4 @@
-mod audiocontrol;
-mod config;
-mod songrec;
-mod vu_meter;
+use analog_recognition::{audiocontrol, config, settings, songrec, vu_meter};
 
 use std::sync::Arc;
 
