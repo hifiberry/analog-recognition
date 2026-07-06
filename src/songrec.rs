@@ -189,6 +189,14 @@ pub async fn run_songrec_once(
                 let Some(line) = line? else { break };
                 if let Some(track) = parse_songrec_line(&line) {
                     if dedup.should_emit(&track) {
+                        // A recognized song is itself strong evidence that
+                        // playback is active, independent of whether the
+                        // VU-meter's level threshold has (yet) reported
+                        // Playing - so assert it here too rather than
+                        // relying solely on the other task's debounce timing.
+                        if let Err(e) = client.send_state_changed(PlayerState::Playing).await {
+                            log::warn!("failed to send state_changed: {e}");
+                        }
                         if let Err(e) = client.send_song_changed(&track).await {
                             log::warn!("failed to send song_changed: {e}");
                         }
@@ -236,6 +244,55 @@ mod tests {
             })))
             .respond_with(ResponseTemplate::new(200))
             .expect(1) // NOT 2, even though the fixture prints "Song A" twice
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({
+                "type": "song_changed",
+                "song": { "title": "Song B", "artist": "Artist B" }
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = AudioControlClient::new(server.uri(), "analog".to_string());
+        let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_songrec_once(&fixture_cfg(), &client, &song_reset),
+        )
+        .await;
+        assert!(result.is_ok(), "run_songrec_once should return once the fixture script exits");
+        result.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn also_sends_playing_state_when_a_song_is_detected() {
+        // A recognized song is itself strong evidence that playback is
+        // active, independent of whether the VU-meter's level threshold has
+        // (yet) flipped its own state to Playing. Each distinct detection
+        // should assert Playing, not just publish the song metadata.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({
+                "type": "state_changed",
+                "state": "playing"
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(2) // once for Song A, once for Song B - NOT for the repeated Song A line
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({
+                "type": "song_changed",
+                "song": { "title": "Song A", "artist": "Artist A" }
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
