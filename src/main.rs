@@ -28,10 +28,17 @@ async fn main() -> anyhow::Result<()> {
         vu_meter::run_state_task(&vu_cfg, &state_client, &state_song_reset).await
     });
 
+    let settings = Arc::new(settings::SettingsClient::new(
+        cfg.configurator.base_url.clone(),
+        cfg.configurator.songrec_enabled_key.clone(),
+    ));
+    let poll = std::time::Duration::from_secs(cfg.configurator.setting_poll_secs);
+
     let rec_client = client.clone();
+    let rec_settings = settings.clone();
     let songrec_cfg = cfg.songrec.clone();
     let rec_handle = tokio::spawn(async move {
-        songrec::run_recognition_task(&songrec_cfg, &rec_client, &song_reset).await
+        songrec::run_recognition_task(&songrec_cfg, &rec_settings, &rec_client, &song_reset, poll).await
     });
 
     let _ = tokio::join!(state_handle, rec_handle);
