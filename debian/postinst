@@ -1,0 +1,80 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+    configure)
+        # Register in Web UI player registry
+        HBOS_PLAYERS_D="/etc/hifiberry/players.d"
+        mkdir -p "$HBOS_PLAYERS_D/icons"
+
+        cat > "$HBOS_PLAYERS_D/analog.json" <<'PLAYEREOF'
+{
+    "name": "Analog Input",
+    "provided_by": "analog-recognition",
+    "systemd_service": "analog-recognition",
+    "icon": "analog",
+    "allow_change": true,
+    "maintainer_name": "HiFiBerry",
+    "maintainer_url": "https://github.com/hifiberry/analog-recognition",
+    "settings": [
+        {
+            "key": "songrec_enabled",
+            "type": "toggle",
+            "label": "Recognize tracks",
+            "description": "Identify tracks with songrec. When off, shows \"Unknown artist\" / \"Unknown song\".",
+            "default": true
+        }
+    ]
+}
+PLAYEREOF
+
+        if [ -f /usr/share/hifiberry-analog-recognition/icons/analog.svg ]; then
+            cp /usr/share/hifiberry-analog-recognition/icons/analog.svg "$HBOS_PLAYERS_D/icons/analog.svg"
+        fi
+
+        echo "Registered Analog Input in Web UI player registry."
+
+        # Register systemd permissions via configserver drop-in
+        mkdir -p /etc/configserver/conf.d
+        cat > /etc/configserver/conf.d/analog-recognition.json <<'CONFEOF'
+{
+    "systemd": {
+        "analog-recognition": "all"
+    }
+}
+CONFEOF
+
+        echo "Configserver drop-in installed for analog-recognition."
+
+        # Register with ACR
+        if [ -d /etc/audiocontrol ]; then
+            ACR_PLAYERS_D="/etc/audiocontrol/players.d"
+            mkdir -p "$ACR_PLAYERS_D"
+            cat > "$ACR_PLAYERS_D/analog.json" <<'ACREOF'
+{
+    "generic": {
+        "name": "analog",
+        "display_name": "Analog Input",
+        "enable": true,
+        "supports_api_events": true,
+        "capabilities": [],
+        "initial_state": "stopped"
+    }
+}
+ACREOF
+            echo "Registered analog with ACR."
+        fi
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

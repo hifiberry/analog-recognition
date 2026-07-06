@@ -16,3 +16,8 @@ stop_debounce_secs = 20
 
 [logging]
 level = "info"
+
+[configurator]
+base_url = "http://localhost:1081/api/v1"
+songrec_enabled_key = "player.analog-recognition.songrec_enabled"
+setting_poll_secs = 10

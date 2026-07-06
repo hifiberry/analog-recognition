@@ -1,3 +1,13 @@
+hifiberry-analog-recognition (0.2.0) stable; urgency=medium
+
+  * Register as a HiFiBerryOS player plugin (webui players.d + configserver
+    permission + ACR players.d drop-in) via postinst/postrm.
+  * Add "Recognize tracks" setting: when off, publish "Unknown artist" /
+    "Unknown song" instead of running songrec.
+  * Depend on hifiberry-audiocontrol and hifiberry-vu-meter.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 06 Jul 2026 12:00:00 +0000
+
 hifiberry-analog-recognition (0.1.0) stable; urgency=medium
 
   * Initial release
