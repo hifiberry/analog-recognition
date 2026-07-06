@@ -1,3 +1,9 @@
+hifiberry-analog-recognition (0.2.3) stable; urgency=medium
+
+  * songrec: capture from input-processor.monitor (was riaa.monitor).
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 06 Jul 2026 15:10:00 +0000
+
 hifiberry-analog-recognition (0.2.2) stable; urgency=medium
 
   * Use `config-soundcard --has-input` in the service ExecCondition instead

@@ -3,7 +3,7 @@ base_url = "http://localhost:1080/api"
 player_name = "analog"
 
 [songrec]
-device = "riaa.monitor"
+device = "input-processor.monitor"
 request_interval_secs = 10
 binary = "songrec"
 

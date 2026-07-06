@@ -35,7 +35,7 @@ See `/etc/analog-recognition/config.toml` (installed by the package with
 sensible defaults). Key values:
 
 - `songrec.device` — the PipeWire monitor source to listen on (default
-  `riaa.monitor`).
+  `input-processor.monitor`).
 - `vu_meter.start_threshold` / `stop_threshold` — level (0-255, mapping
   -60dB..0dB) used to distinguish real playback from idle/surface noise.
   Tune against your actual turntable/cartridge noise floor.

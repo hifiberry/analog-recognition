@@ -103,7 +103,7 @@ mod tests {
             player_name = "analog"
 
             [songrec]
-            device = "riaa.monitor"
+            device = "input-processor.monitor"
             request_interval_secs = 10
             binary = "songrec"
 
@@ -119,7 +119,7 @@ mod tests {
         "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.audiocontrol.player_name, "analog");
-        assert_eq!(cfg.songrec.device, "riaa.monitor");
+        assert_eq!(cfg.songrec.device, "input-processor.monitor");
         assert_eq!(cfg.vu_meter.start_threshold, 40);
         assert_eq!(cfg.logging.level, "debug");
     }
@@ -132,7 +132,7 @@ mod tests {
             player_name = "analog"
 
             [songrec]
-            device = "riaa.monitor"
+            device = "input-processor.monitor"
             request_interval_secs = 10
             binary = "songrec"
 
@@ -155,7 +155,7 @@ mod tests {
             player_name = "analog"
 
             [songrec]
-            device = "riaa.monitor"
+            device = "input-processor.monitor"
             request_interval_secs = 10
             binary = "songrec"
 
@@ -183,7 +183,7 @@ mod tests {
             player_name = "analog"
 
             [songrec]
-            device = "riaa.monitor"
+            device = "input-processor.monitor"
             request_interval_secs = 10
             binary = "songrec"
 
