@@ -173,8 +173,21 @@ mod tests {
             .await;
         let client = AudioControlClient::new(server.uri(), "analog".to_string());
 
-        run_songrec_once(&fixture_cfg(), &client).await.unwrap();
-        run_songrec_once(&fixture_cfg(), &client).await.unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_songrec_once(&fixture_cfg(), &client),
+        )
+        .await;
+        assert!(result.is_ok(), "run_songrec_once should return once the fixture script exits");
+        result.unwrap().unwrap();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_songrec_once(&fixture_cfg(), &client),
+        )
+        .await;
+        assert!(result.is_ok(), "run_songrec_once should return once the fixture script exits");
+        result.unwrap().unwrap();
     }
 
     fn track(title: &str) -> RecognizedTrack {
