@@ -124,6 +124,14 @@ pub async fn connect_and_run(
     let (ws_stream, _) = tokio_tungstenite::connect_async(&cfg.ws_url).await?;
     let (_, mut read) = ws_stream.split();
     let mut sm = PlaybackStateMachine::new(cfg);
+    // Tracks the state we've last confirmed AudioControl received. Compared
+    // against sm.current() on every frame (not just on transitions) so that
+    // a send failure - e.g. AudioControl's webserver not yet accepting
+    // connections during a boot-time race - gets retried on the next frame
+    // instead of permanently desyncing the displayed state until the next
+    // real Playing/Stopped transition, which for a vinyl side may be
+    // minutes away or may never come before the process restarts.
+    let mut last_synced: Option<PlayerState> = None;
 
     while let Some(msg) = read.next().await {
         let msg = msg?;
@@ -133,9 +141,6 @@ pub async fn connect_and_run(
                 arr.copy_from_slice(&data[0..6]);
                 let frame = parse_level_frame(&arr);
                 if let Some(new_state) = sm.on_level(frame.level(), Instant::now()) {
-                    if let Err(e) = client.send_state_changed(new_state).await {
-                        log::warn!("failed to send state_changed: {e}");
-                    }
                     let _ = state_tx.send(new_state);
                     if new_state == PlayerState::Stopped {
                         if let Err(e) = client.send_song_cleared().await {
@@ -148,6 +153,12 @@ pub async fn connect_and_run(
                         // pause-and-resume, or a quiet passage that dipped
                         // below the level threshold).
                         song_reset.notify_one();
+                    }
+                }
+                if last_synced != Some(sm.current()) {
+                    match client.send_state_changed(sm.current()).await {
+                        Ok(()) => last_synced = Some(sm.current()),
+                        Err(e) => log::warn!("failed to send state_changed: {e}"),
                     }
                 }
             }
@@ -435,6 +446,67 @@ mod tests {
         .await;
         assert!(result.is_ok(), "connect_and_run should finish once the server closes");
         server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retries_state_changed_after_a_failed_send() {
+        // Reproduces the vinyl startup race: the first attempt to report
+        // Playing fails (AudioControl not ready yet), but the level stays
+        // above the threshold on the next frame, so the retry must succeed
+        // without waiting for another real state transition.
+        let ac_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({ "type": "state_changed", "state": "playing" })))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .mount(&ac_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .and(body_json(serde_json::json!({ "type": "state_changed", "state": "playing" })))
+            .respond_with(ResponseTemplate::new(200))
+            .with_priority(2)
+            .expect(1)
+            .mount(&ac_server)
+            .await;
+        let client = AudioControlClient::new(ac_server.uri(), "analog".to_string());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = VuMeterConfig {
+            ws_url: format!("ws://{addr}"),
+            start_threshold: 40,
+            stop_threshold: 40,
+            start_debounce_secs: 0,
+            stop_debounce_secs: 0,
+        };
+
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            // Two loud frames in a row: the first triggers Playing and its
+            // send fails; the second must retry the same target state.
+            ws.send(Message::Binary(vec![90, 0, 90, 0, 0, 2])).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            ws.send(Message::Binary(vec![90, 0, 90, 0, 0, 2])).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        });
+
+        let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+        let (state_tx, _state_rx) = tokio::sync::watch::channel(PlayerState::Stopped);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            connect_and_run(&cfg, &client, &song_reset, &state_tx),
+        )
+        .await;
+        assert!(result.is_ok(), "connect_and_run should finish once the server closes");
+        server_task.await.unwrap();
+        // wiremock's mount-time `expect(1)` on each mock, checked when
+        // `ac_server` drops, proves exactly one failed attempt followed by
+        // exactly one successful retry - not a doubled send, not a stall.
     }
 
     #[tokio::test]
