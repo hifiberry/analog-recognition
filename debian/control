@@ -2,7 +2,9 @@ Source: hifiberry-analog-recognition
 Section: sound
 Priority: optional
 Maintainer: HiFiBerry <info@hifiberry.com>
-Build-Depends: debhelper-compat (= 13)
+Build-Depends: debhelper-compat (= 13),
+               curl,
+               ca-certificates
 Standards-Version: 4.6.0
 Homepage: https://github.com/hifiberry/hifiberry-os
 Vcs-Git: https://github.com/hifiberry/analog-recognition.git
