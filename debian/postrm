@@ -5,6 +5,12 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     rm -f /etc/hifiberry/players.d/analog.json
     rm -f /etc/hifiberry/players.d/icons/analog.svg
     rm -f /etc/configserver/conf.d/analog-recognition.json
+fi
+
+if [ "$1" = "purge" ]; then
+    # /etc/audiocontrol/players.d/analog.json is a registered conffile
+    # (installed by debian/rules), so dpkg governs it: a locally-modified
+    # conffile survives a plain "remove" and is only deleted on purge.
     rm -f /etc/audiocontrol/players.d/analog.json
 fi
 

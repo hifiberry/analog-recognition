@@ -1,0 +1,10 @@
+{
+    "generic": {
+        "name": "analog",
+        "display_name": "Analog Input",
+        "enable": true,
+        "supports_api_events": true,
+        "capabilities": [],
+        "initial_state": "stopped"
+    }
+}

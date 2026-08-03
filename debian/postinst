@@ -46,24 +46,9 @@ CONFEOF
 
         echo "Configserver drop-in installed for analog-recognition."
 
-        # Register with ACR
-        if [ -d /etc/audiocontrol ]; then
-            ACR_PLAYERS_D="/etc/audiocontrol/players.d"
-            mkdir -p "$ACR_PLAYERS_D"
-            cat > "$ACR_PLAYERS_D/analog.json" <<'ACREOF'
-{
-    "generic": {
-        "name": "analog",
-        "display_name": "Analog Input",
-        "enable": true,
-        "supports_api_events": true,
-        "capabilities": [],
-        "initial_state": "stopped"
-    }
-}
-ACREOF
-            echo "Registered analog with ACR."
-        fi
+        # The ACR player definition (/etc/audiocontrol/players.d/analog.json)
+        # now ships as a packaged conffile via debian/rules; it is no longer
+        # generated here.
         ;;
 
     abort-upgrade|abort-remove|abort-deconfigure)

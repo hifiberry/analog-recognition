@@ -51,6 +51,10 @@ override_dh_auto_install:
 	cp package-files/usr/share/hifiberry-analog-recognition/icons/analog.svg \
 		debian/hifiberry-analog-recognition/usr/share/hifiberry-analog-recognition/icons/
 
+	mkdir -p debian/hifiberry-analog-recognition/etc/audiocontrol/players.d
+	cp package-files/etc/audiocontrol/players.d/analog.json \
+		debian/hifiberry-analog-recognition/etc/audiocontrol/players.d/
+
 override_dh_auto_test:
 	# Skip tests during packaging (run via `cargo test` in CI/dev instead)
 
