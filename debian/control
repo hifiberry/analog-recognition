@@ -22,7 +22,7 @@ XB-Extension-Needs-Reboot: no
 # Served by hifiberry-webui itself, so it resolves before the extension is
 # installed and on a device with no internet access.
 XB-Extension-Icon-Url: /images/svg/input.svg
-Architecture: arm64
+Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends},
          songrec,
          hifiberry-audiocontrol,
