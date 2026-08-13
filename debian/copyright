@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: hifiberry-analog-recognition
-Upstream-Contact: HiFiBerry <support@hifiberry.com>
+Upstream-Contact: HiFiBerry <info@hifiberry.com>
 Source: https://github.com/hifiberry/analog-recognition
 
 Files: *

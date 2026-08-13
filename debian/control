@@ -6,7 +6,7 @@ Build-Depends: debhelper-compat (= 13),
                curl,
                ca-certificates
 Standards-Version: 4.6.0
-Homepage: https://github.com/hifiberry/hifiberry-os
+Homepage: https://github.com/hifiberry/analog-recognition
 Vcs-Git: https://github.com/hifiberry/analog-recognition.git
 Vcs-Browser: https://github.com/hifiberry/analog-recognition
 

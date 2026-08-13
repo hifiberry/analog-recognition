@@ -1,3 +1,15 @@
+hifiberry-analog-recognition (0.2.5) stable; urgency=medium
+
+  * Add a LICENSE file with the MIT text already declared in
+    debian/copyright, and record the license, description and repository
+    in Cargo.toml
+  * Set the Cargo package version to match the Debian version; it had been
+    left at 0.1.0 since the initial scaffold
+  * Point Homepage at this repository rather than at hifiberry-os, and use
+    info@hifiberry.com consistently as the contact address
+
+ -- HiFiBerry <info@hifiberry.com>  Thu, 13 Aug 2026 12:00:00 +0200
+
 hifiberry-analog-recognition (0.2.4) stable; urgency=medium
 
   * Ship the ACR player definition as /etc/audiocontrol/players.d/analog.json.

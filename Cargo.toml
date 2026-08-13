@@ -1,7 +1,11 @@
 [package]
 name = "analog-recognition"
-version = "0.1.0"
+version = "0.2.5"
 edition = "2021"
+description = "Identifies tracks on an analog input with songrec and reports play/stop state from the VU meter, publishing both into AudioControl"
+license = "MIT"
+repository = "https://github.com/hifiberry/analog-recognition"
+readme = "README.md"
 
 [lib]
 name = "analog_recognition"
