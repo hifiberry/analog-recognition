@@ -1,3 +1,16 @@
+hifiberry-analog-recognition (0.2.6) stable; urgency=medium
+
+  * Publish as a HiFiBerry extension: declare the XB-Extension metadata so
+    the package appears in the web interface's extension catalog. Removed
+    from the hbos-full bundle, which now installs it on demand instead.
+  * Ship the WebUI player descriptor and its icon
+    (/etc/hifiberry/players.d/analog.json). These were never packaged --
+    they existed only as hand-placed files on individual devices, so the
+    player appeared in the WebUI there and nowhere else. As an extension
+    that gap would be fatal: installing it would register no player at all.
+
+ -- HiFiBerry <support@hifiberry.com>  Thu, 20 Aug 2026 11:00:00 +0000
+
 hifiberry-analog-recognition (0.2.5) stable; urgency=medium
 
   * Add a LICENSE file with the MIT text already declared in

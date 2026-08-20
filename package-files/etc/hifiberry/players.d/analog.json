@@ -1,0 +1,18 @@
+{
+    "name": "Analog Input",
+    "provided_by": "analog-recognition",
+    "systemd_service": "analog-recognition",
+    "icon": "analog",
+    "allow_change": true,
+    "maintainer_name": "HiFiBerry",
+    "maintainer_url": "https://github.com/hifiberry/analog-recognition",
+    "settings": [
+        {
+            "key": "songrec_enabled",
+            "type": "toggle",
+            "label": "Recognize tracks",
+            "description": "Identify tracks with songrec. When off, shows \"Unknown artist\" / \"Unknown song\".",
+            "default": true
+        }
+    ]
+}

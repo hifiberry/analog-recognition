@@ -55,6 +55,18 @@ override_dh_auto_install:
 	cp package-files/etc/audiocontrol/players.d/analog.json \
 		debian/hifiberry-analog-recognition/etc/audiocontrol/players.d/
 
+	# WebUI player descriptor and its icon. Distinct from the ACR definition
+	# above: different schema, different directory. Until now this was never
+	# packaged -- it existed only as a hand-placed file on individual devices,
+	# so the player appeared in the WebUI there and nowhere else. That matters
+	# more now the package is an extension: one that installs without
+	# registering a player is invisible.
+	mkdir -p debian/hifiberry-analog-recognition/etc/hifiberry/players.d/icons
+	cp package-files/etc/hifiberry/players.d/analog.json \
+		debian/hifiberry-analog-recognition/etc/hifiberry/players.d/
+	cp package-files/usr/share/hifiberry-analog-recognition/icons/analog.svg \
+		debian/hifiberry-analog-recognition/etc/hifiberry/players.d/icons/
+
 override_dh_auto_test:
 	# Skip tests during packaging (run via `cargo test` in CI/dev instead)
 
