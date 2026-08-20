@@ -1,0 +1,2 @@
+rm_conffile /etc/hifiberry/players.d/analog.json 0.2.7
+rm_conffile /etc/hifiberry/players.d/icons/analog.svg 0.2.7
