@@ -5,6 +5,8 @@ player_name = "analog"
 [songrec]
 device = "input-processor.monitor"
 request_interval_secs = 10
+# songrec itself, or a wrapper that execs it -- the stream check below asks
+# PipeWire about the pid of whatever is started here.
 binary = "songrec"
 # songrec can keep running with a dead capture stream -- a PipeWire restart
 # leaves it that way -- and its stdout never closes, so watching the process

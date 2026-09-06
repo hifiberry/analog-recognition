@@ -114,6 +114,40 @@ pub enum Outcome {
     StreamLost,
 }
 
+const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+/// A run this long counts as songrec having worked, rather than having failed
+/// on startup.
+const HEALTHY_RUN: Duration = Duration::from_secs(60);
+
+/// The delay before the next restart attempt.
+///
+/// The backoff exists for a songrec that dies immediately and would otherwise
+/// be respawned in a tight loop, so it keeps doubling for those. A run that
+/// lasted was not that, and the watchdog makes those routine: without the
+/// reset, a device that has lost its stream a few times sits permanently at
+/// the cap, including on the first restart after hours of healthy operation --
+/// the case where recovering quickly matters most.
+fn next_backoff(current: Duration, ran_for: Duration) -> Duration {
+    if ran_for >= HEALTHY_RUN {
+        INITIAL_BACKOFF
+    } else {
+        (current * 2).min(MAX_BACKOFF)
+    }
+}
+
+/// `run_songrec_once` alongside how long it ran, for the backoff.
+async fn run_songrec_once_timed(
+    cfg: &SongrecConfig,
+    client: &AudioControlClient,
+    song_reset: &Arc<Notify>,
+) -> (anyhow::Result<Outcome>, Duration) {
+    let started = tokio::time::Instant::now();
+    let result = run_songrec_once(cfg, client, song_reset).await;
+    (result, started.elapsed())
+}
+
 pub async fn run_recognition_task(
     cfg: &SongrecConfig,
     settings: &SettingsClient,
@@ -122,7 +156,7 @@ pub async fn run_recognition_task(
     poll: Duration,
     state_rx: &tokio::sync::watch::Receiver<PlayerState>,
 ) -> ! {
-    let mut backoff = Duration::from_secs(1);
+    let mut backoff = INITIAL_BACKOFF;
     let mut unknown_published = false;
     loop {
         if !settings.songrec_enabled().await {
@@ -142,7 +176,7 @@ pub async fn run_recognition_task(
         }
         unknown_published = false;
         tokio::select! {
-            result = run_songrec_once(cfg, client, song_reset) => {
+            (result, ran_for) = run_songrec_once_timed(cfg, client, song_reset) => {
                 match result {
                     Ok(Outcome::Exited) => log::warn!("songrec exited, restarting"),
                     Ok(Outcome::StreamLost) => log::warn!(
@@ -153,14 +187,14 @@ pub async fn run_recognition_task(
                     Err(e) => log::warn!("songrec failed: {e}, restarting"),
                 }
                 tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(30));
+                backoff = next_backoff(backoff, ran_for);
             }
             _ = wait_until_disabled(settings, poll) => {
                 // The run_songrec_once future is dropped here; its child is
                 // killed via kill_on_drop. Loop re-checks and enters the
                 // disabled branch above.
                 log::info!("songrec disabled via setting, stopping recognition");
-                backoff = Duration::from_secs(1);
+                backoff = INITIAL_BACKOFF;
             }
         }
     }
@@ -581,6 +615,33 @@ mod tests {
             stream_grace_secs: 0,
             pw_dump_binary: "pw-dump".to_string(),
         }
+    }
+
+    #[test]
+    fn the_backoff_resets_after_a_run_that_lasted() {
+        // The watchdog turns restarts into a routine event, so without a reset
+        // a device that has lost its stream a few times sits permanently at
+        // the 30s cap -- including on the first restart after twenty healthy
+        // hours, which is exactly when a fast recovery matters.
+        let capped = Duration::from_secs(30);
+        assert_eq!(
+            next_backoff(capped, Duration::from_secs(60 * 60 * 20)),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn the_backoff_still_grows_while_songrec_keeps_failing_immediately() {
+        // A songrec that dies on startup must not be respawned in a tight
+        // loop, which is what the backoff was for in the first place.
+        assert_eq!(
+            next_backoff(Duration::from_secs(1), Duration::from_millis(50)),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            next_backoff(Duration::from_secs(30), Duration::from_millis(50)),
+            Duration::from_secs(30)
+        );
     }
 
     #[tokio::test]

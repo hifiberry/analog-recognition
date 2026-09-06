@@ -21,6 +21,9 @@ pub struct AudioControlConfig {
 pub struct SongrecConfig {
     pub device: String,
     pub request_interval_secs: u64,
+    /// Must be songrec itself, or a wrapper that `exec`s it. The stream check
+    /// asks PipeWire about the pid of the process spawned here, and a wrapper
+    /// that merely *runs* songrec as a child keeps a pid PipeWire never sees.
     pub binary: String,
     /// How often to confirm songrec still holds a capture stream. Zero turns
     /// the check off. Defaulted so existing config files keep working.

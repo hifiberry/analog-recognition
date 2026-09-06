@@ -20,17 +20,23 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// The pids of every process that currently holds an audio capture stream.
+/// The pids of every process that currently holds an audio capture stream, or
+/// `None` when the dump could not be understood at all.
 ///
 /// `pw-dump` reports the stream and the process that owns it as two separate
 /// objects: the Node carries `media.class = Stream/Input/Audio` and a
 /// `client.id`, and only the Client that `client.id` points at carries
 /// `application.process.id`. So the two have to be joined, which is why this
 /// takes the whole dump rather than scanning for one property.
-pub fn capture_stream_pids(pw_dump: &str) -> Vec<u32> {
-    let Ok(objects) = serde_json::from_str::<Vec<serde_json::Value>>(pw_dump) else {
-        return Vec::new();
-    };
+///
+/// The `None` matters as much as the pids. An empty list means "pw-dump was
+/// read, and nothing is capturing"; a dump this cannot parse means nothing
+/// about songrec at all. Returning an empty list for both would make a
+/// pw-dump that prints a warning line, gets truncated, or changes shape in a
+/// future release look exactly like a songrec that has lost its stream -- and
+/// restart it every interval, forever, on a device that is working.
+pub fn capture_stream_pids(pw_dump: &str) -> Option<Vec<u32>> {
+    let objects = serde_json::from_str::<Vec<serde_json::Value>>(pw_dump).ok()?;
 
     let mut pid_by_client: HashMap<i64, u32> = HashMap::new();
     for object in &objects {
@@ -64,7 +70,7 @@ pub fn capture_stream_pids(pw_dump: &str) -> Vec<u32> {
             }
         }
     }
-    pids
+    Some(pids)
 }
 
 fn props(object: &serde_json::Value) -> Option<&serde_json::Map<String, serde_json::Value>> {
@@ -90,32 +96,69 @@ pub enum StreamCheck {
     PwDump { binary: String },
     /// Always answers the same way. Tests only.
     Fixed(bool),
+    /// Answers from a fixed script, then `true` once it runs out. Tests only.
+    Scripted(std::sync::Mutex<std::collections::VecDeque<bool>>),
 }
 
+/// How long `pw-dump` gets before the check is abandoned.
+///
+/// A wedged PipeWire daemon -- as opposed to an absent one -- leaves `pw-dump`
+/// blocked on its core sync with nothing on stdout. Without this the check
+/// never returns, so the watchdog quietly stops watching and the service is
+/// back to the behaviour this module exists to fix, with no log line saying so.
+const PW_DUMP_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl StreamCheck {
+    /// A check that answers from `answers` in order. Tests only.
+    #[cfg(test)]
+    pub fn scripted(answers: impl IntoIterator<Item = bool>) -> Self {
+        StreamCheck::Scripted(std::sync::Mutex::new(answers.into_iter().collect()))
+    }
+
     pub async fn holds_capture_stream(&self, pid: u32) -> bool {
         match self {
             StreamCheck::Fixed(answer) => *answer,
+            StreamCheck::Scripted(answers) => {
+                answers.lock().unwrap().pop_front().unwrap_or(true)
+            }
             StreamCheck::PwDump { binary } => {
-                let output = tokio::process::Command::new(binary).output().await;
-                match output {
-                    Ok(output) if output.status.success() => {
+                // Every branch below that is not "pw-dump was read and songrec
+                // is not in it" answers `true`. A check that could not be made
+                // says nothing about songrec, and reporting it as "no stream"
+                // would turn a broken diagnostic into a restart loop.
+                let run = tokio::process::Command::new(binary)
+                    .kill_on_drop(true)
+                    .output();
+                match tokio::time::timeout(PW_DUMP_TIMEOUT, run).await {
+                    Ok(Ok(output)) if output.status.success() => {
                         let dump = String::from_utf8_lossy(&output.stdout);
-                        capture_stream_pids(&dump).contains(&pid)
+                        match capture_stream_pids(&dump) {
+                            Some(pids) => pids.contains(&pid),
+                            None => {
+                                log::warn!(
+                                    "could not parse the output of {binary}; \
+                                     skipping the stream check"
+                                );
+                                true
+                            }
+                        }
                     }
-                    Ok(output) => {
-                        // A pw-dump that fails says nothing about songrec, so
-                        // it must not be read as "no stream" -- that would
-                        // restart songrec in a loop on a host where pw-dump
-                        // is missing or broken.
+                    Ok(Ok(output)) => {
                         log::warn!(
                             "{binary} exited with {}; skipping the stream check",
                             output.status
                         );
                         true
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         log::warn!("could not run {binary}: {e}; skipping the stream check");
+                        true
+                    }
+                    Err(_) => {
+                        log::warn!(
+                            "{binary} did not finish within {PW_DUMP_TIMEOUT:?} -- PipeWire \
+                             may be wedged; skipping the stream check"
+                        );
                         true
                     }
                 }
@@ -124,8 +167,20 @@ impl StreamCheck {
     }
 }
 
-/// Resolves once `pid` has been seen without a capture stream, having waited
-/// `grace` first and then checked every `interval`.
+/// How many checks in a row must come back empty before songrec is restarted.
+///
+/// `pw-dump` is an instantaneous snapshot of the graph, and a working songrec
+/// can be absent from one: PipeWire re-creating the input-processor node, a
+/// device profile switch, or songrec reopening its own stream all show up that
+/// way. A restart costs the in-flight recognition plus the caller's backoff, so
+/// one unlucky sample should not buy one. The failure this watches for lasts
+/// hours, so insisting on consecutive misses costs a single interval of
+/// detection latency and nothing else.
+const REQUIRED_CONSECUTIVE_MISSES: u32 = 2;
+
+/// Resolves once `pid` has been seen without a capture stream
+/// `REQUIRED_CONSECUTIVE_MISSES` times running, having waited `grace` first and
+/// then checked every `interval`.
 ///
 /// Never resolves when `interval` is zero: that is how the watchdog is turned
 /// off in config.
@@ -143,9 +198,15 @@ pub async fn wait_until_stream_lost(
     // had a chance to would restart it forever without it ever getting to
     // work.
     tokio::time::sleep(grace).await;
+    let mut misses = 0;
     loop {
-        if !check.holds_capture_stream(pid).await {
-            return;
+        if check.holds_capture_stream(pid).await {
+            misses = 0;
+        } else {
+            misses += 1;
+            if misses >= REQUIRED_CONSECUTIVE_MISSES {
+                return;
+            }
         }
         tokio::time::sleep(interval).await;
     }
@@ -202,7 +263,7 @@ mod tests {
 
     #[test]
     fn finds_the_pid_behind_a_capture_stream() {
-        assert_eq!(capture_stream_pids(REAL_DUMP), vec![40012]);
+        assert_eq!(capture_stream_pids(REAL_DUMP), Some(vec![40012]));
     }
 
     #[test]
@@ -212,7 +273,7 @@ mod tests {
         // excluded on media.class alone, not because the fixture happens to
         // leave it unreachable. A watchdog that counted playback streams
         // would think songrec was fine whenever anything at all was playing.
-        assert!(!capture_stream_pids(REAL_DUMP).contains(&1589));
+        assert!(!capture_stream_pids(REAL_DUMP).unwrap().contains(&1589));
     }
 
     #[test]
@@ -227,7 +288,7 @@ mod tests {
             "info": { "props": { "application.process.id": 40012 } }
           }
         ]"#;
-        assert!(capture_stream_pids(dump).is_empty());
+        assert_eq!(capture_stream_pids(dump), Some(Vec::new()));
     }
 
     #[test]
@@ -247,14 +308,45 @@ mod tests {
             } }
           }
         ]"#;
-        assert_eq!(capture_stream_pids(dump), vec![40012]);
+        assert_eq!(capture_stream_pids(dump), Some(vec![40012]));
     }
 
     #[test]
-    fn malformed_output_yields_no_pids_rather_than_panicking() {
-        assert!(capture_stream_pids("not json at all").is_empty());
-        assert!(capture_stream_pids("").is_empty());
-        assert!(capture_stream_pids("{}").is_empty());
+    fn output_that_cannot_be_parsed_is_reported_as_unknown_not_as_no_streams() {
+        // The distinction the watchdog turns on: "parsed, and songrec is not
+        // in it" is grounds for a restart, "could not parse it at all" is not.
+        // Collapsing the two would restart songrec every interval on any host
+        // whose pw-dump prints something unexpected.
+        assert_eq!(capture_stream_pids("not json at all"), None);
+        assert_eq!(capture_stream_pids(""), None);
+        assert_eq!(capture_stream_pids("{}"), None);
+    }
+
+    #[tokio::test]
+    async fn a_pw_dump_that_cannot_be_parsed_is_not_read_as_a_missing_stream() {
+        let check = StreamCheck::PwDump {
+            binary: concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/fake_pw_dump_garbage.sh"
+            )
+            .to_string(),
+        };
+        assert!(check.holds_capture_stream(1).await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pw_dump_that_hangs_is_not_read_as_a_missing_stream() {
+        // A wedged PipeWire daemon is a plausible variant of the failure this
+        // watchdog exists for. Without a timeout the check never returns, the
+        // watchdog silently stops checking, and nothing says so.
+        let check = StreamCheck::PwDump {
+            binary: concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/fake_pw_dump_hangs.sh"
+            )
+            .to_string(),
+        };
+        assert!(check.holds_capture_stream(1).await);
     }
 
     #[test]
@@ -266,7 +358,7 @@ mod tests {
             "info": { "props": { "client.id": 999, "media.class": "Stream/Input/Audio" } }
           }
         ]"#;
-        assert!(capture_stream_pids(dump).is_empty());
+        assert_eq!(capture_stream_pids(dump), Some(Vec::new()));
     }
 
     #[tokio::test]
@@ -335,4 +427,37 @@ mod tests {
             "the watchdog fired even though it was disabled"
         );
     }
+    #[tokio::test(start_paused = true)]
+    async fn a_single_missed_check_does_not_restart_songrec() {
+        // pw-dump is an instantaneous snapshot. PipeWire re-creating a node,
+        // a profile switch or songrec reopening its stream can all show up as
+        // one empty sample on a songrec that is working perfectly well.
+        let check = StreamCheck::scripted([false, true, false, true, false, true]);
+        let watch = wait_until_stream_lost(
+            1,
+            &check,
+            Duration::from_secs(20),
+            Duration::from_secs(30),
+        );
+        let result = tokio::time::timeout(Duration::from_secs(60 * 60), watch).await;
+        assert!(
+            result.is_err(),
+            "songrec was restarted on a single missed check"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn consecutive_missed_checks_do_restart_songrec() {
+        // The other side of it: a genuinely lost stream stays lost, so the
+        // misses run consecutively and the watchdog still fires promptly.
+        let check = StreamCheck::scripted([true, false, false]);
+        wait_until_stream_lost(
+            1,
+            &check,
+            Duration::from_secs(20),
+            Duration::from_secs(30),
+        )
+        .await;
+    }
+
 }

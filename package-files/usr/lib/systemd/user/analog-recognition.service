@@ -8,6 +8,11 @@ After=pipewire.service vu-meter.service
 # nothing failed. PartOf= makes a PipeWire restart restart this service too,
 # which is the cheap half of the fix; the service also watches for a lost
 # stream itself, for the cases systemd cannot see.
+#
+# PartOf= propagates a stop as well as a restart, so stopping PipeWire stops
+# recognition too and starting PipeWire again does not bring it back. That is
+# intended: with no PipeWire there is nothing to recognise, and a deliberate
+# stop of the audio stack should not leave this running against it.
 PartOf=pipewire.service
 
 [Service]
