@@ -22,6 +22,26 @@ pub struct SongrecConfig {
     pub device: String,
     pub request_interval_secs: u64,
     pub binary: String,
+    /// How often to confirm songrec still holds a capture stream. Zero turns
+    /// the check off. Defaulted so existing config files keep working.
+    #[serde(default = "default_stream_check_secs")]
+    pub stream_check_secs: u64,
+    /// How long to let songrec connect and open its device before the first
+    /// check. Checking sooner restarts it before it can ever start working.
+    #[serde(default = "default_stream_grace_secs")]
+    pub stream_grace_secs: u64,
+    #[serde(default = "default_pw_dump_binary")]
+    pub pw_dump_binary: String,
+}
+
+fn default_stream_check_secs() -> u64 {
+    30
+}
+fn default_stream_grace_secs() -> u64 {
+    20
+}
+fn default_pw_dump_binary() -> String {
+    "pw-dump".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
