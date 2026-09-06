@@ -6,6 +6,13 @@ player_name = "analog"
 device = "input-processor.monitor"
 request_interval_secs = 10
 binary = "songrec"
+# songrec can keep running with a dead capture stream -- a PipeWire restart
+# leaves it that way -- and its stdout never closes, so watching the process
+# cannot detect it. These check that it still holds a capture stream, and
+# restart it when it does not. stream_check_secs = 0 turns the check off.
+stream_check_secs = 30
+stream_grace_secs = 20
+pw_dump_binary = "pw-dump"
 
 [vu_meter]
 ws_url = "ws://localhost:2717/api/v1/levels"
