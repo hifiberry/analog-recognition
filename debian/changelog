@@ -1,3 +1,33 @@
+hifiberry-analog-recognition (0.3.0) stable; urgency=medium
+
+  * Notice when songrec is running but no longer recognising anything.
+    songrec reaches PipeWire through pipewire-pulse. pipewire-pulse survives
+    a restart of the PipeWire daemon and reconnects, but the capture stream
+    does not come back -- and songrec neither notices nor exits. Its stdout
+    never closes, so the supervision, which watches exactly that, waits for
+    a line that can never arrive; Restart=on-failure never fires either,
+    because nothing failed. Found on a device where songrec had been running
+    for 20 hours holding no stream: the service looked healthy, the player
+    reported "stopped", and analog recognition had simply been gone since
+    PipeWire last restarted, four hours after boot.
+  * The unit gains PartOf=pipewire.service, so a PipeWire restart restarts
+    recognition with it. After= only orders startup and propagates nothing
+    afterwards.
+  * The service also checks for itself, for the cases systemd cannot see:
+    every stream_check_secs (default 30) it confirms songrec still holds a
+    capture stream, and restarts it when it does not. A check that cannot be
+    run -- no pw-dump on the host -- counts as "still there", so a missing
+    diagnostic tool cannot turn into a restart loop. stream_check_secs = 0
+    disables it.
+    Two consecutive empty checks are required before a restart, since pw-dump
+    is an instantaneous snapshot a working songrec can be missing from, and
+    pw-dump gets five seconds before the check is abandoned, so a wedged
+    PipeWire cannot leave the watchdog silently not watching.
+  * The version in Cargo.toml had drifted behind debian/changelog at 0.2.5;
+    both now read 0.3.0.
+
+ -- HiFiBerry <support@hifiberry.com>  Sun, 06 Sep 2026 07:23:01 +0000
+
 hifiberry-analog-recognition (0.2.7) stable; urgency=medium
 
   * Ship the WebUI player descriptor and icon from

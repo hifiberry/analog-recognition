@@ -1,6 +1,6 @@
 [package]
 name = "analog-recognition"
-version = "0.2.5"
+version = "0.3.0"
 edition = "2021"
 description = "Identifies tracks on an analog input with songrec and reports play/stop state from the VU meter, publishing both into AudioControl"
 license = "MIT"
@@ -24,4 +24,7 @@ log = "0.4"
 env_logger = "0.11"
 
 [dev-dependencies]
+# start_paused: the watchdog tests assert on timing (grace period, check
+# interval) and would otherwise have to sleep in real time.
+tokio = { version = "1", features = ["full", "test-util"] }
 wiremock = "0.6"

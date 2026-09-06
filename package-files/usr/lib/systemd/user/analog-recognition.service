@@ -1,6 +1,19 @@
 [Unit]
 Description=HiFiBerry Analog Input Recognition
 After=pipewire.service vu-meter.service
+# After= only orders startup; it propagates nothing afterwards. songrec reaches
+# PipeWire through pipewire-pulse, which survives a restart of the PipeWire
+# daemon and reconnects -- but the capture stream does not come back, and
+# songrec neither notices nor exits. Restart=on-failure never fires, because
+# nothing failed. PartOf= makes a PipeWire restart restart this service too,
+# which is the cheap half of the fix; the service also watches for a lost
+# stream itself, for the cases systemd cannot see.
+#
+# PartOf= propagates a stop as well as a restart, so stopping PipeWire stops
+# recognition too and starting PipeWire again does not bring it back. That is
+# intended: with no PipeWire there is nothing to recognise, and a deliberate
+# stop of the audio stack should not leave this running against it.
+PartOf=pipewire.service
 
 [Service]
 Type=simple
