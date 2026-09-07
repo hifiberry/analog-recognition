@@ -1,3 +1,21 @@
+hifiberry-analog-recognition (0.3.1) stable; urgency=medium
+
+  * postinst: stop writing the WebUI descriptor and icon into
+    /etc/hifiberry/players.d. The package ships both under
+    /usr/share/hifiberry/players.d, and configurator lets /etc shadow
+    /usr/share, so the copy written here masked the packaged one and nothing
+    ever read it. The two are byte-identical today, so nothing is visibly
+    broken -- which is the reason to fix it now rather than later: the next
+    field added to the shipped descriptor would be masked silently. That is
+    how hifiberry-librespot lost a conflicts_with declaration and
+    hifiberry-shairport lost its entire settings block, in both cases for
+    weeks, with no error anywhere.
+  * postinst: remove the stale /etc copy when upgrading from an affected
+    version. A file present on a fresh install is left alone: there it is an
+    administrator's own override.
+
+ -- HiFiBerry <support@hifiberry.com>  Mon, 07 Sep 2026 10:26:26 +0000
+
 hifiberry-analog-recognition (0.3.0) stable; urgency=medium
 
   * Notice when songrec is running but no longer recognising anything.
