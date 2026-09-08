@@ -27,6 +27,9 @@ async fn main() -> anyhow::Result<()> {
         cfg.audiocontrol.player_name.clone(),
     ));
     let song_reset = Arc::new(tokio::sync::Notify::new());
+    // Recognition is reported to the state task, not to AudioControl, so that
+    // task stays the only writer of the player's state.
+    let recognized = Arc::new(tokio::sync::Notify::new());
     let (state_tx, state_rx) = tokio::sync::watch::channel(state::PlayerState::Stopped);
 
     let settings = Arc::new(settings::SettingsClient::new(
@@ -34,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
         cfg.configurator.songrec_enabled_key.clone(),
         cfg.configurator.threshold_key.clone(),
     ));
-    let poll = std::time::Duration::from_secs(cfg.configurator.setting_poll_secs);
+    let poll = cfg.configurator.poll_interval();
 
     // Capture the analog input level natively from PipeWire (never the shared
     // output meter) and drive Playing/Stopped from it. The activation level is
@@ -44,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
     let state_settings = settings.clone();
     let vu_cfg = cfg.vu_meter.clone();
     let state_song_reset = song_reset.clone();
+    let state_recognized = recognized.clone();
     let state_handle = tokio::spawn(async move {
         input_level::run_state_task(
             &vu_cfg,
@@ -51,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
             &state_settings,
             poll,
             &state_song_reset,
+            &state_recognized,
             &state_tx,
             level,
         )
@@ -66,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
             &rec_settings,
             &rec_client,
             &song_reset,
+            &recognized,
             poll,
             &state_rx,
         )

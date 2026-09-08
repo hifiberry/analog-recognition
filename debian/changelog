@@ -1,3 +1,35 @@
+hifiberry-analog-recognition (0.4.2) stable; urgency=medium
+
+  * Playback state has a single writer again. Recognition reported "playing"
+    to AudioControl directly, alongside the state task that owns play/stop.
+    That task only re-sends when its own view changes, so a record quiet
+    enough to be recognized without crossing the activation level left the
+    player reported as playing with nothing that would ever clear it.
+    Recognition now signals the state machine, which takes it as evidence of
+    playback and applies the usual stop debounce on top.
+  * A capture that stops delivering no longer freezes the level. The PipeWire
+    process callback can stop firing while the main loop runs on quite
+    happily -- a daemon restart, a torn-down link, the target node going away
+    -- which left the last measured level latched indefinitely, and a loud one
+    held the player in Playing. Levels now carry the time they were measured
+    and read as silence once they are more than two seconds old.
+  * AudioControl requests now time out. They are awaited on every level tick
+    and reqwest applies no timeout of its own, so a server that accepted the
+    connection and then went quiet stalled playback detection for good.
+  * Reject settings that cannot mean anything. A non-finite activation level
+    ("nan" and "inf" both parse as numbers) compared false against every
+    level, silently pinning the detector to one state; a negative hysteresis
+    put the stop threshold above the start threshold, leaving a band of levels
+    that both started and stopped playback once per debounce cycle.
+  * setting_poll_secs = 0 no longer takes the service down on its first tick.
+    It is clamped to a second -- 0 reads like "off" because for
+    stream_check_secs that is exactly what it means.
+  * README: document capture_target, threshold_dbfs and hysteresis_db. It
+    still described start_threshold and stop_threshold on a -60dB scale,
+    neither of which has existed since 0.4.0.
+
+ -- HiFiBerry <support@hifiberry.com>  Di., 08 Sep. 2026 21:03:44 +0000
+
 hifiberry-analog-recognition (0.4.1) stable; urgency=medium
 
   * Build-Depends: add pkg-config, clang and libpipewire-0.3-dev. The native

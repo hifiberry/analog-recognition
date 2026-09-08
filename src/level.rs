@@ -1,12 +1,18 @@
 //! Turning captured audio samples into the 0-255 level the playback state
 //! machine thresholds against.
 //!
-//! The scale is fixed at -60 dB..0 dB → 0..255, matching what the platform's
-//! vu-meter uses, so a threshold value means the same dB whichever source
-//! produced it.
+//! The scale is fixed at -80 dB..0 dB → 0..255. It is deliberately wider than
+//! the platform vu-meter's own scale: the Web UI lets the activation level go
+//! as low as -80 dBFS, and a scale that bottomed out sooner could not express
+//! the quiet end of that range.
 
 pub const MIN_DB: f64 = -80.0;
 pub const MAX_DB: f64 = 0.0;
+
+/// The activation level used when none is configured, and the fallback for a
+/// configured one that is not a real number. Kept here beside the scale it is
+/// expressed on so the config default and the state machine cannot drift.
+pub const DEFAULT_ACTIVATION_DBFS: f64 = -50.0;
 
 /// RMS of one buffer of interleaved-then-deinterleaved samples, already scaled
 /// to [-1.0, 1.0]. Returns the level as 0-255 (MIN_DB → 0, MAX_DB → 255).

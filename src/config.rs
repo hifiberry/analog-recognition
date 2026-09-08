@@ -1,4 +1,6 @@
 use serde::Deserialize;
+#[cfg(test)]
+use std::time::Duration;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -83,7 +85,7 @@ fn default_capture_target() -> String {
     "input-processor".to_string()
 }
 fn default_threshold_dbfs() -> f64 {
-    -50.0
+    crate::level::DEFAULT_ACTIVATION_DBFS
 }
 fn default_hysteresis_db() -> f64 {
     2.0
@@ -138,6 +140,18 @@ fn default_threshold_key() -> String {
 }
 fn default_setting_poll_secs() -> u64 {
     10
+}
+
+impl ConfiguratorConfig {
+    /// The settings poll period, never zero.
+    ///
+    /// `tokio::time::interval` panics outright on a zero period, so a
+    /// `setting_poll_secs = 0` would take the daemon down on the first tick --
+    /// and 0 reads like a plausible "don't poll" to anyone editing the file,
+    /// because for `stream_check_secs` that is exactly what it means.
+    pub fn poll_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.setting_poll_secs.max(1))
+    }
 }
 
 impl Default for ConfiguratorConfig {
@@ -332,5 +346,29 @@ mod tests {
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.configurator.base_url, "http://example:9/api/v1");
         assert_eq!(cfg.configurator.setting_poll_secs, 5);
+        assert_eq!(cfg.configurator.poll_interval(), Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn a_zero_poll_interval_is_clamped_rather_than_panicking_a_timer() {
+        // tokio::time::interval panics on a zero period, so 0 must never reach
+        // one -- see ConfiguratorConfig::poll_interval.
+        let cfg = ConfiguratorConfig {
+            setting_poll_secs: 0,
+            ..ConfiguratorConfig::default()
+        };
+        assert_eq!(cfg.poll_interval(), Duration::from_secs(1));
+        // And the timer it feeds really does accept the clamped value.
+        let _ = tokio::time::interval(cfg.poll_interval());
+    }
+
+    #[test]
+    fn the_config_default_activation_level_is_the_shared_one() {
+        // config.toml's default and the state machine's fallback are the same
+        // constant, so they cannot drift apart.
+        assert_eq!(
+            default_threshold_dbfs(),
+            crate::level::DEFAULT_ACTIVATION_DBFS
+        );
     }
 }

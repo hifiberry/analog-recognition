@@ -156,9 +156,10 @@ async fn run_songrec_once_timed(
     cfg: &SongrecConfig,
     client: &AudioControlClient,
     song_reset: &Arc<Notify>,
+    recognized: &Arc<Notify>,
 ) -> (anyhow::Result<Outcome>, Duration) {
     let started = tokio::time::Instant::now();
-    let result = run_songrec_once(cfg, client, song_reset).await;
+    let result = run_songrec_once(cfg, client, song_reset, recognized).await;
     (result, started.elapsed())
 }
 
@@ -167,6 +168,7 @@ pub async fn run_recognition_task(
     settings: &SettingsClient,
     client: &AudioControlClient,
     song_reset: &Arc<Notify>,
+    recognized: &Arc<Notify>,
     poll: Duration,
     state_rx: &tokio::sync::watch::Receiver<PlayerState>,
 ) -> ! {
@@ -189,7 +191,7 @@ pub async fn run_recognition_task(
         }
         unknown_published = false;
         tokio::select! {
-            (result, ran_for) = run_songrec_once_timed(cfg, client, song_reset) => {
+            (result, ran_for) = run_songrec_once_timed(cfg, client, song_reset, recognized) => {
                 match result {
                     Ok(Outcome::Exited) => log::warn!("songrec exited, restarting"),
                     Ok(Outcome::StreamLost) => log::warn!(
@@ -229,11 +231,13 @@ pub async fn run_songrec_once(
     cfg: &SongrecConfig,
     client: &AudioControlClient,
     song_reset: &Arc<Notify>,
+    recognized: &Arc<Notify>,
 ) -> anyhow::Result<Outcome> {
     run_songrec_once_with(
         cfg,
         client,
         song_reset,
+        recognized,
         &StreamCheck::PwDump {
             binary: cfg.pw_dump_binary.clone(),
         },
@@ -247,6 +251,7 @@ pub async fn run_songrec_once_with(
     cfg: &SongrecConfig,
     client: &AudioControlClient,
     song_reset: &Arc<Notify>,
+    recognized: &Arc<Notify>,
     stream_check: &StreamCheck,
 ) -> anyhow::Result<Outcome> {
     let mut child = Command::new(&cfg.binary)
@@ -301,12 +306,12 @@ pub async fn run_songrec_once_with(
                     if dedup.should_emit(&track) {
                         // A recognized song is itself strong evidence that
                         // playback is active, independent of whether the
-                        // VU-meter's level threshold has (yet) reported
-                        // Playing - so assert it here too rather than
-                        // relying solely on the other task's debounce timing.
-                        if let Err(e) = client.send_state_changed(PlayerState::Playing).await {
-                            log::warn!("failed to send state_changed: {e}");
-                        }
+                        // level has (yet) crossed the activation threshold.
+                        // Signal the state task rather than reporting Playing
+                        // here: that task owns the player's state, and a
+                        // second writer would leave the two disagreeing with
+                        // nothing to reconcile them.
+                        recognized.notify_one();
                         if let Err(e) = client.send_song_changed(&track).await {
                             log::warn!("failed to send song_changed: {e}");
                         }
@@ -378,9 +383,10 @@ mod tests {
 
         let client = AudioControlClient::new(server.uri(), "analog".to_string());
         let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+        let recognized = std::sync::Arc::new(tokio::sync::Notify::new());
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            run_songrec_once(&fixture_cfg(), &client, &song_reset),
+            run_songrec_once(&fixture_cfg(), &client, &song_reset, &recognized),
         )
         .await;
         assert!(
@@ -391,11 +397,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn also_sends_playing_state_when_a_song_is_detected() {
-        // A recognized song is itself strong evidence that playback is
-        // active, independent of whether the VU-meter's level threshold has
-        // (yet) flipped its own state to Playing. Each distinct detection
-        // should assert Playing, not just publish the song metadata.
+    async fn a_recognition_signals_the_state_task_rather_than_reporting_state_itself() {
+        // A recognized song is strong evidence that playback is active, but
+        // this task must not report it to AudioControl directly. The state
+        // task is the only writer of the player's state, and it only re-sends
+        // when its own view changes -- so a Playing posted from here would
+        // stick until that task happened to transition. A record quiet enough
+        // to be recognized without crossing the activation threshold used to
+        // pin the player Playing indefinitely for exactly that reason.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/player/analog/update"))
@@ -404,7 +413,7 @@ mod tests {
                 "state": "playing"
             })))
             .respond_with(ResponseTemplate::new(200))
-            .expect(2) // once for Song A, once for Song B - NOT for the repeated Song A line
+            .expect(0) // the state task reports state, not this one
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -430,9 +439,10 @@ mod tests {
 
         let client = AudioControlClient::new(server.uri(), "analog".to_string());
         let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+        let recognized = std::sync::Arc::new(tokio::sync::Notify::new());
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            run_songrec_once(&fixture_cfg(), &client, &song_reset),
+            run_songrec_once(&fixture_cfg(), &client, &song_reset, &recognized),
         )
         .await;
         assert!(
@@ -440,6 +450,15 @@ mod tests {
             "run_songrec_once should return once the fixture script exits"
         );
         result.unwrap().unwrap();
+
+        // The state task was signalled instead. Notify collapses repeats into
+        // a single permit, so assert that it was signalled at all.
+        let notified = recognized.notified();
+        tokio::pin!(notified);
+        assert!(
+            futures_util::poll!(notified).is_ready(),
+            "a recognized track should have signalled the state task"
+        );
     }
 
     #[tokio::test]
@@ -470,6 +489,7 @@ mod tests {
             pw_dump_binary: "pw-dump".to_string(),
         };
         let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+        let recognized = std::sync::Arc::new(tokio::sync::Notify::new());
 
         let reset_trigger = song_reset.clone();
         tokio::spawn(async move {
@@ -482,7 +502,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            run_songrec_once(&cfg, &client, &song_reset),
+            run_songrec_once(&cfg, &client, &song_reset, &recognized),
         )
         .await;
         assert!(
@@ -503,10 +523,11 @@ mod tests {
             .await;
         let client = AudioControlClient::new(server.uri(), "analog".to_string());
         let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+        let recognized = std::sync::Arc::new(tokio::sync::Notify::new());
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            run_songrec_once(&fixture_cfg(), &client, &song_reset),
+            run_songrec_once(&fixture_cfg(), &client, &song_reset, &recognized),
         )
         .await;
         assert!(
@@ -517,7 +538,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            run_songrec_once(&fixture_cfg(), &client, &song_reset),
+            run_songrec_once(&fixture_cfg(), &client, &song_reset, &recognized),
         )
         .await;
         assert!(
@@ -687,12 +708,19 @@ mod tests {
             .await;
         let client = AudioControlClient::new(server.uri(), "analog".to_string());
         let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+        let recognized = std::sync::Arc::new(tokio::sync::Notify::new());
         let mut cfg = silent_forever_cfg();
         cfg.stream_check_secs = 1;
 
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            run_songrec_once_with(&cfg, &client, &song_reset, &StreamCheck::Fixed(false)),
+            run_songrec_once_with(
+                &cfg,
+                &client,
+                &song_reset,
+                &recognized,
+                &StreamCheck::Fixed(false),
+            ),
         )
         .await
         .expect("the watchdog should have fired rather than blocking forever")
@@ -715,6 +743,7 @@ mod tests {
             .await;
         let client = AudioControlClient::new(server.uri(), "analog".to_string());
         let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+        let recognized = std::sync::Arc::new(tokio::sync::Notify::new());
         let mut cfg = silent_forever_cfg();
         cfg.stream_check_secs = 1;
 
@@ -722,7 +751,13 @@ mod tests {
         // runtime for seconds starves the timing-sensitive tests alongside it.
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(600),
-            run_songrec_once_with(&cfg, &client, &song_reset, &StreamCheck::Fixed(true)),
+            run_songrec_once_with(
+                &cfg,
+                &client,
+                &song_reset,
+                &recognized,
+                &StreamCheck::Fixed(true),
+            ),
         )
         .await;
 
@@ -745,12 +780,19 @@ mod tests {
             .await;
         let client = AudioControlClient::new(server.uri(), "analog".to_string());
         let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+        let recognized = std::sync::Arc::new(tokio::sync::Notify::new());
         let mut cfg = fixture_cfg();
         cfg.stream_check_secs = 1;
 
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            run_songrec_once_with(&cfg, &client, &song_reset, &StreamCheck::Fixed(true)),
+            run_songrec_once_with(
+                &cfg,
+                &client,
+                &song_reset,
+                &recognized,
+                &StreamCheck::Fixed(true),
+            ),
         )
         .await
         .expect("the fixture should have exited")

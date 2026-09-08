@@ -93,3 +93,25 @@ async fn activation_dbfs_is_none_when_unparseable() {
         .await;
     assert_eq!(client(server.uri()).activation_dbfs().await, None);
 }
+
+#[tokio::test]
+async fn activation_dbfs_rejects_values_that_are_not_real_numbers() {
+    // "nan" and "inf" both parse as f64 without complaint. A NaN threshold
+    // compares false against every level, which would silently pin the
+    // detector to whatever state it was already in.
+    for stored in ["nan", "NaN", "inf", "-inf", "infinity"] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/key/{THRESHOLD_KEY}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "success", "data": { "key": THRESHOLD_KEY, "value": stored }
+            })))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            client(server.uri()).activation_dbfs().await,
+            None,
+            "{stored} should be rejected"
+        );
+    }
+}
