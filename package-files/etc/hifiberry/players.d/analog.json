@@ -13,6 +13,17 @@
             "label": "Recognize tracks",
             "description": "Identify tracks with songrec. When off, shows \"Unknown artist\" / \"Unknown song\".",
             "default": true
+        },
+        {
+            "key": "threshold_dbfs",
+            "type": "number",
+            "widget": "slider",
+            "label": "Input activation level (dBFS)",
+            "description": "How loud the analog input must be before it counts as playing. Lower is more sensitive.",
+            "default": -50,
+            "min": -80,
+            "max": -20,
+            "step": 1
         }
     ]
 }

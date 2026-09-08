@@ -21,10 +21,12 @@ pw_dump_binary = "pw-dump"
 # -- the analog input chain, never the output mix -- so network players
 # (Spotify/Tidal) are not mistaken for analog activity.
 capture_target = "input-processor"
-# Level thresholds on a 0-255 scale mapping -60dB..0dB (so 40 = -50.6 dBFS,
-# 55 = -47 dBFS). Tune against your turntable/cartridge noise floor.
-start_threshold = 40
-stop_threshold = 40
+# Activation level in dBFS: the analog input must reach this to count as
+# playing (range -80..-20). The Web UI exposes this and its value overrides
+# the line below at runtime. hysteresis_db is how far below it the input must
+# fall to count as stopped again.
+threshold_dbfs = -50.0
+hysteresis_db = 2.0
 start_debounce_secs = 1
 stop_debounce_secs = 20
 

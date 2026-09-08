@@ -1,3 +1,31 @@
+hifiberry-analog-recognition (0.4.0) stable; urgency=medium
+
+  * Detect analog playback from the analog input itself, not the shared output
+    meter. The Playing/Stopped level was read from the output vu-meter (the 2x2
+    sink monitor), which also carries whatever network player -- Spotify, Tidal
+    Connect -- is running. On the analog-input device that meant starting a
+    network stream raised the "analog" level, so the active-player logic
+    switched to analog and stopped the stream that had just started, seconds
+    in. The analog player now captures the analog node ("input-processor")
+    directly via its own PipeWire stream and computes the level itself, so only
+    real analog input is detected. The capture is targeted declaratively
+    (target.object + stream.capture.sink); the session manager links it, no
+    external pw-link.
+  * Make the activation level selectable from the Web UI, in dBFS. The player
+    descriptor gains a "threshold_dbfs" number/slider (range -80..-20 dBFS,
+    default -50); the daemon re-reads it from the ConfigDB
+    (player.analog-recognition.threshold_dbfs) on the settings poll and applies
+    it live, no restart. [vu_meter] now takes threshold_dbfs + hysteresis_db
+    instead of raw start/stop_threshold, and the level scale spans -80..0 dBFS.
+    The deprecated [vu_meter] ws_url is ignored and warned about; old config
+    files still parse. SettingsClient gains a 5s timeout so a wedged
+    configurator cannot stall the state loop.
+  * Add a GitHub Actions CI: fmt, clippy (-D warnings) and the unit/integration
+    tests, plus a separate job that runs the PipeWire capture end to end
+    against a headless PipeWire session.
+
+ -- HiFiBerry <support@hifiberry.com>  Tue, 08 Sep 2026 19:35:23 +0000
+
 hifiberry-analog-recognition (0.3.1) stable; urgency=medium
 
   * postinst: stop writing the WebUI descriptor and icon into

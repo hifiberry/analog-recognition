@@ -24,6 +24,7 @@ use pw::spa::pod::Pod;
 use crate::audiocontrol::AudioControlClient;
 use crate::config::VuMeterConfig;
 use crate::level;
+use crate::settings::SettingsClient;
 use crate::state::{PlaybackStateMachine, PlayerState};
 use tokio::sync::{watch, Notify};
 
@@ -187,10 +188,14 @@ fn run_capture(target: &str, level: &Arc<AtomicU8>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Poll the captured level and drive AudioControl. Never returns.
+/// Poll the captured level and drive AudioControl. Also re-reads the Web-UI
+/// activation level (dBFS) on a slower cadence and applies it live. Never
+/// returns.
 pub async fn run_state_task(
     cfg: &VuMeterConfig,
     client: &AudioControlClient,
+    settings: &SettingsClient,
+    settings_poll: Duration,
     song_reset: &Arc<Notify>,
     state_tx: &watch::Sender<PlayerState>,
     level: Arc<AtomicU8>,
@@ -201,19 +206,30 @@ pub async fn run_state_task(
     // is retried on the next tick instead of desyncing until the next real
     // transition (which for a vinyl side may be many minutes away).
     let mut last_synced: Option<PlayerState> = None;
-    let mut ticker = tokio::time::interval(POLL);
+    let mut level_tick = tokio::time::interval(POLL);
+    let mut settings_tick = tokio::time::interval(settings_poll);
     loop {
-        ticker.tick().await;
-        let transition = sm.on_level(level.load(Ordering::Relaxed), Instant::now());
-        report(
-            client,
-            song_reset,
-            state_tx,
-            transition,
-            sm.current(),
-            &mut last_synced,
-        )
-        .await;
+        tokio::select! {
+            _ = level_tick.tick() => {
+                let transition = sm.on_level(level.load(Ordering::Relaxed), Instant::now());
+                report(
+                    client,
+                    song_reset,
+                    state_tx,
+                    transition,
+                    sm.current(),
+                    &mut last_synced,
+                )
+                .await;
+            }
+            _ = settings_tick.tick() => {
+                // The Web UI value wins when set; otherwise keep the config
+                // default. Applied every cycle so a UI change takes effect
+                // within one settings_poll without a restart.
+                let dbfs = settings.activation_dbfs().await.unwrap_or(cfg.threshold_dbfs);
+                sm.set_activation_dbfs(dbfs, cfg.hysteresis_db);
+            }
+        }
     }
 }
 
@@ -292,9 +308,9 @@ mod tests {
 
     #[test]
     fn block_level_matches_the_db_scale() {
-        // A constant amplitude of 10^(-30/20) * full-scale is -30 dBFS, which
-        // is the midpoint of -60..0 -> ~127.
-        let amp = (10f64.powf(-30.0 / 20.0) * crate::input_level::MAX_VALUE_S32) as i32;
+        // A constant amplitude of 10^(-40/20) * full-scale is -40 dBFS, which
+        // is the midpoint of the -80..0 scale -> ~127.
+        let amp = (10f64.powf(-40.0 / 20.0) * crate::input_level::MAX_VALUE_S32) as i32;
         let b = block(&[amp, amp], 1024);
         let u = block_level_u8(&b, 2);
         assert!((125..=129).contains(&u), "got {u}");

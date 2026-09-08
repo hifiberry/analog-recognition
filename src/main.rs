@@ -29,22 +29,33 @@ async fn main() -> anyhow::Result<()> {
     let song_reset = Arc::new(tokio::sync::Notify::new());
     let (state_tx, state_rx) = tokio::sync::watch::channel(state::PlayerState::Stopped);
 
-    // Capture the analog input level natively from PipeWire (never the shared
-    // output meter) and drive Playing/Stopped from it.
-    let level = input_level::start_capture(&cfg.vu_meter.capture_target);
-    let state_client = client.clone();
-    let vu_cfg = cfg.vu_meter.clone();
-    let state_song_reset = song_reset.clone();
-    let state_handle = tokio::spawn(async move {
-        input_level::run_state_task(&vu_cfg, &state_client, &state_song_reset, &state_tx, level)
-            .await
-    });
-
     let settings = Arc::new(settings::SettingsClient::new(
         cfg.configurator.base_url.clone(),
         cfg.configurator.songrec_enabled_key.clone(),
+        cfg.configurator.threshold_key.clone(),
     ));
     let poll = std::time::Duration::from_secs(cfg.configurator.setting_poll_secs);
+
+    // Capture the analog input level natively from PipeWire (never the shared
+    // output meter) and drive Playing/Stopped from it. The activation level is
+    // re-read from the Web-UI setting on the same poll cadence.
+    let level = input_level::start_capture(&cfg.vu_meter.capture_target);
+    let state_client = client.clone();
+    let state_settings = settings.clone();
+    let vu_cfg = cfg.vu_meter.clone();
+    let state_song_reset = song_reset.clone();
+    let state_handle = tokio::spawn(async move {
+        input_level::run_state_task(
+            &vu_cfg,
+            &state_client,
+            &state_settings,
+            poll,
+            &state_song_reset,
+            &state_tx,
+            level,
+        )
+        .await
+    });
 
     let rec_client = client.clone();
     let rec_settings = settings.clone();

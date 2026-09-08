@@ -3,9 +3,10 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const KEY: &str = "player.analog-recognition.songrec_enabled";
+const THRESHOLD_KEY: &str = "player.analog-recognition.threshold_dbfs";
 
 fn client(base: String) -> SettingsClient {
-    SettingsClient::new(base, KEY.to_string())
+    SettingsClient::new(base, KEY.to_string(), THRESHOLD_KEY.to_string())
 }
 
 #[tokio::test]
@@ -53,4 +54,42 @@ async fn default_true_on_connection_failure() {
             .songrec_enabled()
             .await
     );
+}
+
+#[tokio::test]
+async fn activation_dbfs_reads_the_stored_value() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/key/{THRESHOLD_KEY}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "success", "data": { "key": THRESHOLD_KEY, "value": "-42" }
+        })))
+        .mount(&server)
+        .await;
+    assert_eq!(client(server.uri()).activation_dbfs().await, Some(-42.0));
+}
+
+#[tokio::test]
+async fn activation_dbfs_is_none_when_key_absent_404() {
+    // Caller then keeps its configured default.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/key/{THRESHOLD_KEY}")))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    assert_eq!(client(server.uri()).activation_dbfs().await, None);
+}
+
+#[tokio::test]
+async fn activation_dbfs_is_none_when_unparseable() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/key/{THRESHOLD_KEY}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "success", "data": { "key": THRESHOLD_KEY, "value": "loud" }
+        })))
+        .mount(&server)
+        .await;
+    assert_eq!(client(server.uri()).activation_dbfs().await, None);
 }

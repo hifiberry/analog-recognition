@@ -118,9 +118,7 @@ impl StreamCheck {
     pub async fn holds_capture_stream(&self, pid: u32) -> bool {
         match self {
             StreamCheck::Fixed(answer) => *answer,
-            StreamCheck::Scripted(answers) => {
-                answers.lock().unwrap().pop_front().unwrap_or(true)
-            }
+            StreamCheck::Scripted(answers) => answers.lock().unwrap().pop_front().unwrap_or(true),
             StreamCheck::PwDump { binary } => {
                 // Every branch below that is not "pw-dump was read and songrec
                 // is not in it" answers `true`. A check that could not be made
@@ -433,12 +431,8 @@ mod tests {
         // a profile switch or songrec reopening its stream can all show up as
         // one empty sample on a songrec that is working perfectly well.
         let check = StreamCheck::scripted([false, true, false, true, false, true]);
-        let watch = wait_until_stream_lost(
-            1,
-            &check,
-            Duration::from_secs(20),
-            Duration::from_secs(30),
-        );
+        let watch =
+            wait_until_stream_lost(1, &check, Duration::from_secs(20), Duration::from_secs(30));
         let result = tokio::time::timeout(Duration::from_secs(60 * 60), watch).await;
         assert!(
             result.is_err(),
@@ -451,13 +445,6 @@ mod tests {
         // The other side of it: a genuinely lost stream stays lost, so the
         // misses run consecutively and the watchdog still fires promptly.
         let check = StreamCheck::scripted([true, false, false]);
-        wait_until_stream_lost(
-            1,
-            &check,
-            Duration::from_secs(20),
-            Duration::from_secs(30),
-        )
-        .await;
+        wait_until_stream_lost(1, &check, Duration::from_secs(20), Duration::from_secs(30)).await;
     }
-
 }

@@ -234,7 +234,9 @@ pub async fn run_songrec_once(
         cfg,
         client,
         song_reset,
-        &StreamCheck::PwDump { binary: cfg.pw_dump_binary.clone() },
+        &StreamCheck::PwDump {
+            binary: cfg.pw_dump_binary.clone(),
+        },
     )
     .await
 }
@@ -337,8 +339,11 @@ mod tests {
         SongrecConfig {
             device: "unused".to_string(),
             request_interval_secs: 10,
-            binary: concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_songrec.sh")
-                .to_string(),
+            binary: concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/fake_songrec.sh"
+            )
+            .to_string(),
             // The fixtures are shell scripts and never open an audio device,
             // so the watchdog is off unless a test turns it on deliberately.
             stream_check_secs: 0,
@@ -721,7 +726,10 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_err(), "songrec was restarted while it still held its stream");
+        assert!(
+            result.is_err(),
+            "songrec was restarted while it still held its stream"
+        );
     }
 
     #[tokio::test]

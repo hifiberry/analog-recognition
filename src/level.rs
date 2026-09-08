@@ -5,7 +5,7 @@
 //! vu-meter uses, so a threshold value means the same dB whichever source
 //! produced it.
 
-pub const MIN_DB: f64 = -60.0;
+pub const MIN_DB: f64 = -80.0;
 pub const MAX_DB: f64 = 0.0;
 
 /// RMS of one buffer of interleaved-then-deinterleaved samples, already scaled
@@ -54,16 +54,19 @@ mod tests {
 
     #[test]
     fn mid_scale_maps_linearly_in_db() {
-        // -30 dB is the midpoint of -60..0, so ~127/128.
-        let u = db_to_u8(-30.0);
+        // -40 dB is the midpoint of -80..0, so ~127/128.
+        let u = db_to_u8(-40.0);
         assert!((126..=129).contains(&u), "got {u}");
     }
 
     #[test]
-    fn a_minus_47db_tone_sits_just_below_a_55_threshold() {
-        // Sanity-check the tuning: the -47 dB detection point we chose is
-        // value ~55 on this scale.
-        assert_eq!(db_to_u8(-47.0), 55);
+    fn known_dbfs_points_on_the_80db_scale() {
+        // -80..0 spans 0..255, so the default activation level and the range
+        // ends land at predictable values.
+        assert_eq!(db_to_u8(-80.0), 0);
+        assert_eq!(db_to_u8(0.0), 255);
+        assert_eq!(db_to_u8(-50.0), 96); // default activation level
+        assert_eq!(db_to_u8(-20.0), 191); // loudest the UI allows as a threshold
     }
 
     #[test]

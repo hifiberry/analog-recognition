@@ -60,9 +60,19 @@ pub struct VuMeterConfig {
     /// playback would be detected as analog activity.
     #[serde(default = "default_capture_target")]
     pub capture_target: String,
-    pub start_threshold: u8,
-    pub stop_threshold: u8,
+    /// Activation level in dBFS: the analog input must reach this to count as
+    /// playing. This is what the Web UI exposes (see players.d/analog.json);
+    /// the value there overrides this one at runtime.
+    #[serde(default = "default_threshold_dbfs")]
+    pub threshold_dbfs: f64,
+    /// How many dB below the activation level the input must fall to count as
+    /// stopped. A little hysteresis keeps the state from flapping around the
+    /// threshold.
+    #[serde(default = "default_hysteresis_db")]
+    pub hysteresis_db: f64,
+    #[serde(default = "default_start_debounce_secs")]
     pub start_debounce_secs: u64,
+    #[serde(default = "default_stop_debounce_secs")]
     pub stop_debounce_secs: u64,
     /// Deprecated: the old output-vu-meter WebSocket URL. Ignored.
     #[serde(default)]
@@ -71,6 +81,18 @@ pub struct VuMeterConfig {
 
 fn default_capture_target() -> String {
     "input-processor".to_string()
+}
+fn default_threshold_dbfs() -> f64 {
+    -50.0
+}
+fn default_hysteresis_db() -> f64 {
+    2.0
+}
+fn default_start_debounce_secs() -> u64 {
+    1
+}
+fn default_stop_debounce_secs() -> u64 {
+    20
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -97,6 +119,10 @@ pub struct ConfiguratorConfig {
     pub base_url: String,
     #[serde(default = "default_songrec_enabled_key")]
     pub songrec_enabled_key: String,
+    /// ConfigDB key holding the Web-UI activation level (dBFS). Written by the
+    /// player-settings endpoint from players.d/analog.json's "threshold_dbfs".
+    #[serde(default = "default_threshold_key")]
+    pub threshold_key: String,
     #[serde(default = "default_setting_poll_secs")]
     pub setting_poll_secs: u64,
 }
@@ -107,6 +133,9 @@ fn default_configurator_base_url() -> String {
 fn default_songrec_enabled_key() -> String {
     "player.analog-recognition.songrec_enabled".to_string()
 }
+fn default_threshold_key() -> String {
+    "player.analog-recognition.threshold_dbfs".to_string()
+}
 fn default_setting_poll_secs() -> u64 {
     10
 }
@@ -116,6 +145,7 @@ impl Default for ConfiguratorConfig {
         ConfiguratorConfig {
             base_url: default_configurator_base_url(),
             songrec_enabled_key: default_songrec_enabled_key(),
+            threshold_key: default_threshold_key(),
             setting_poll_secs: default_setting_poll_secs(),
         }
     }
@@ -149,8 +179,8 @@ mod tests {
 
             [vu_meter]
             ws_url = "ws://localhost:2717/api/v1/levels"
-            start_threshold = 40
-            stop_threshold = 40
+            threshold_dbfs = -50.0
+            hysteresis_db = 2.0
             start_debounce_secs = 1
             stop_debounce_secs = 20
 
@@ -160,14 +190,15 @@ mod tests {
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.audiocontrol.player_name, "analog");
         assert_eq!(cfg.songrec.device, "input-processor.monitor");
-        assert_eq!(cfg.vu_meter.start_threshold, 40);
+        assert_eq!(cfg.vu_meter.threshold_dbfs, -50.0);
         assert_eq!(cfg.logging.level, "debug");
     }
 
     #[test]
     fn capture_target_defaults_and_ws_url_is_optional() {
-        // A config with neither capture_target nor ws_url: capture_target
-        // falls back to the analog input node and ws_url is simply absent.
+        // A minimal [vu_meter] with nothing set: capture_target, the dBFS
+        // activation level, hysteresis and debounce all fall back to defaults,
+        // and the deprecated ws_url is simply absent.
         let toml_str = r#"
             [audiocontrol]
             base_url = "http://localhost:1080/api"
@@ -179,15 +210,18 @@ mod tests {
             binary = "songrec"
 
             [vu_meter]
-            start_threshold = 55
-            stop_threshold = 48
-            start_debounce_secs = 1
-            stop_debounce_secs = 20
         "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.vu_meter.capture_target, "input-processor");
         assert_eq!(cfg.vu_meter.ws_url, None);
-        assert_eq!(cfg.vu_meter.start_threshold, 55);
+        assert_eq!(cfg.vu_meter.threshold_dbfs, -50.0);
+        assert_eq!(cfg.vu_meter.hysteresis_db, 2.0);
+        assert_eq!(cfg.vu_meter.start_debounce_secs, 1);
+        assert_eq!(cfg.vu_meter.stop_debounce_secs, 20);
+        assert_eq!(
+            cfg.configurator.threshold_key,
+            "player.analog-recognition.threshold_dbfs"
+        );
     }
 
     #[test]
@@ -205,8 +239,8 @@ mod tests {
             [vu_meter]
             capture_target = "some-other-node"
             ws_url = "ws://localhost:2717/api/v1/levels"
-            start_threshold = 40
-            stop_threshold = 40
+            threshold_dbfs = -50.0
+            hysteresis_db = 2.0
             start_debounce_secs = 1
             stop_debounce_secs = 20
         "#;
@@ -234,8 +268,8 @@ mod tests {
 
             [vu_meter]
             ws_url = "ws://localhost:2717/api/v1/levels"
-            start_threshold = 40
-            stop_threshold = 40
+            threshold_dbfs = -50.0
+            hysteresis_db = 2.0
             start_debounce_secs = 1
             stop_debounce_secs = 20
         "#;
@@ -257,8 +291,8 @@ mod tests {
 
             [vu_meter]
             ws_url = "ws://localhost:2717/api/v1/levels"
-            start_threshold = 40
-            stop_threshold = 40
+            threshold_dbfs = -50.0
+            hysteresis_db = 2.0
             start_debounce_secs = 1
             stop_debounce_secs = 20
         "#;
@@ -285,8 +319,8 @@ mod tests {
 
             [vu_meter]
             ws_url = "ws://localhost:2717/api/v1/levels"
-            start_threshold = 40
-            stop_threshold = 40
+            threshold_dbfs = -50.0
+            hysteresis_db = 2.0
             start_debounce_secs = 1
             stop_debounce_secs = 20
 
