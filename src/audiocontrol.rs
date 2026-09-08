@@ -1,5 +1,5 @@
 use crate::songrec::RecognizedTrack;
-use crate::vu_meter::PlayerState;
+use crate::state::PlayerState;
 
 pub struct AudioControlClient {
     http: reqwest::Client,
@@ -69,7 +69,7 @@ impl AudioControlClient {
 mod tests {
     use super::*;
     use crate::songrec::RecognizedTrack;
-    use crate::vu_meter::PlayerState;
+    use crate::state::PlayerState;
     use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -88,7 +88,10 @@ mod tests {
             .await;
 
         let client = AudioControlClient::new(server.uri(), "analog".to_string());
-        client.send_state_changed(PlayerState::Playing).await.unwrap();
+        client
+            .send_state_changed(PlayerState::Playing)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -180,7 +183,8 @@ mod tests {
     #[tokio::test]
     async fn connection_failure_is_an_error_not_a_panic() {
         // Port 1 is reserved and nothing listens there.
-        let client = AudioControlClient::new("http://127.0.0.1:1".to_string(), "analog".to_string());
+        let client =
+            AudioControlClient::new("http://127.0.0.1:1".to_string(), "analog".to_string());
         let result = client.send_state_changed(PlayerState::Stopped).await;
         assert!(result.is_err());
     }

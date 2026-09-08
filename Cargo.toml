@@ -1,6 +1,6 @@
 [package]
 name = "analog-recognition"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 description = "Identifies tracks on an analog input with songrec and reports play/stop state from the VU meter, publishing both into AudioControl"
 license = "MIT"
@@ -12,8 +12,8 @@ name = "analog_recognition"
 path = "src/lib.rs"
 
 [dependencies]
+pipewire = "0.8"
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.24"
 futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }

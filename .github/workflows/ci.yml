@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Core checks: format, lint, and the unit + integration tests that need no
+  # audio server. These gate every push and PR.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpipewire-0.3-dev libclang-dev clang pkg-config
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --all-targets
+
+  # The PipeWire capture path, exercised end to end against a real (headless)
+  # PipeWire session. Kept separate so audio-server flakiness can never mask a
+  # core regression, and the heavier setup only runs once.
+  pipewire-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build and PipeWire dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libpipewire-0.3-dev libclang-dev clang pkg-config \
+            pipewire pipewire-bin wireplumber pipewire-pulse \
+            pulseaudio-utils dbus-x11
+      - name: Build the integration test
+        run: cargo test --test pipewire_capture --no-run
+      - name: Run the capture test against a headless PipeWire session
+        run: |
+          export XDG_RUNTIME_DIR="$(mktemp -d)"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          # An isolated session bus so our pipewire/wireplumber/pulse are the
+          # only ones on it, independent of whatever the runner ships.
+          dbus-run-session -- bash -eux -c '
+            pipewire &
+            wireplumber &
+            pipewire-pulse &
+            # Wait for the PulseAudio-compatible endpoint (pactl) to answer.
+            for i in $(seq 1 30); do
+              if pactl info >/dev/null 2>&1; then break; fi
+              sleep 1
+            done
+            pactl info
+            cargo test --test pipewire_capture -- --ignored --nocapture
+          '
