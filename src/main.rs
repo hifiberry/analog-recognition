@@ -1,4 +1,4 @@
-use analog_recognition::{audiocontrol, config, settings, songrec, vu_meter};
+use analog_recognition::{audiocontrol, config, input_level, settings, songrec, state};
 
 use std::sync::Arc;
 
@@ -14,19 +14,30 @@ async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&cfg.logging.level))
         .init();
     log::info!("loaded config from {config_path}");
+    if cfg.vu_meter.ws_url.is_some() {
+        log::warn!(
+            "[vu_meter] ws_url is deprecated and ignored; the level is now captured \
+             directly from [vu_meter] capture_target ('{}'). Remove ws_url from {config_path}.",
+            cfg.vu_meter.capture_target
+        );
+    }
 
     let client = Arc::new(audiocontrol::AudioControlClient::new(
         cfg.audiocontrol.base_url.clone(),
         cfg.audiocontrol.player_name.clone(),
     ));
     let song_reset = Arc::new(tokio::sync::Notify::new());
-    let (state_tx, state_rx) = tokio::sync::watch::channel(vu_meter::PlayerState::Stopped);
+    let (state_tx, state_rx) = tokio::sync::watch::channel(state::PlayerState::Stopped);
 
+    // Capture the analog input level natively from PipeWire (never the shared
+    // output meter) and drive Playing/Stopped from it.
+    let level = input_level::start_capture(&cfg.vu_meter.capture_target);
     let state_client = client.clone();
     let vu_cfg = cfg.vu_meter.clone();
     let state_song_reset = song_reset.clone();
     let state_handle = tokio::spawn(async move {
-        vu_meter::run_state_task(&vu_cfg, &state_client, &state_song_reset, &state_tx).await
+        input_level::run_state_task(&vu_cfg, &state_client, &state_song_reset, &state_tx, level)
+            .await
     });
 
     let settings = Arc::new(settings::SettingsClient::new(

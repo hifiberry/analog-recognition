@@ -1,8 +1,8 @@
 use crate::audiocontrol::AudioControlClient;
 use crate::config::SongrecConfig;
 use crate::settings::SettingsClient;
+use crate::state::PlayerState;
 use crate::stream_watch::{wait_until_stream_lost, StreamCheck};
-use crate::vu_meter::PlayerState;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -33,7 +33,11 @@ pub fn unknown_track() -> RecognizedTrack {
 /// (should_publish_now, new_already_published_flag).
 pub fn unknown_publish_decision(playing: bool, already_published: bool) -> (bool, bool) {
     if playing {
-        if already_published { (false, true) } else { (true, true) }
+        if already_published {
+            (false, true)
+        } else {
+            (true, true)
+        }
     } else {
         (false, false)
     }
@@ -60,26 +64,36 @@ pub fn parse_songrec_line(line: &str) -> Option<RecognizedTrack> {
         .and_then(|s| s.as_array())
         .and_then(|sections| {
             sections.iter().find_map(|section| {
-                section.get("metadata")?.as_array()?.iter().find_map(|entry| {
-                    if entry.get("title")?.as_str()? == "Album" {
-                        entry.get("text")?.as_str().map(|s| s.to_string())
-                    } else {
-                        None
-                    }
-                })
+                section
+                    .get("metadata")?
+                    .as_array()?
+                    .iter()
+                    .find_map(|entry| {
+                        if entry.get("title")?.as_str()? == "Album" {
+                            entry.get("text")?.as_str().map(|s| s.to_string())
+                        } else {
+                            None
+                        }
+                    })
             })
         });
 
-    Some(RecognizedTrack { title, artist, album, genre })
+    Some(RecognizedTrack {
+        title,
+        artist,
+        album,
+        genre,
+    })
 }
 
+#[derive(Default)]
 pub struct Deduper {
     last_title: Option<String>,
 }
 
 impl Deduper {
     pub fn new() -> Self {
-        Deduper { last_title: None }
+        Deduper::default()
     }
 
     pub fn should_emit(&mut self, track: &RecognizedTrack) -> bool {
@@ -163,8 +177,7 @@ pub async fn run_recognition_task(
             // Disabled: publish the placeholder track only while the VU
             // meter reports playback, and only once per playing stretch.
             let playing = *state_rx.borrow() == PlayerState::Playing;
-            let (should_publish, new_flag) =
-                unknown_publish_decision(playing, unknown_published);
+            let (should_publish, new_flag) = unknown_publish_decision(playing, unknown_published);
             if should_publish {
                 if let Err(e) = client.send_song_changed(&unknown_track()).await {
                     log::warn!("failed to publish unknown track: {e}");
@@ -365,7 +378,10 @@ mod tests {
             run_songrec_once(&fixture_cfg(), &client, &song_reset),
         )
         .await;
-        assert!(result.is_ok(), "run_songrec_once should return once the fixture script exits");
+        assert!(
+            result.is_ok(),
+            "run_songrec_once should return once the fixture script exits"
+        );
         result.unwrap().unwrap();
     }
 
@@ -414,7 +430,10 @@ mod tests {
             run_songrec_once(&fixture_cfg(), &client, &song_reset),
         )
         .await;
-        assert!(result.is_ok(), "run_songrec_once should return once the fixture script exits");
+        assert!(
+            result.is_ok(),
+            "run_songrec_once should return once the fixture script exits"
+        );
         result.unwrap().unwrap();
     }
 
@@ -461,7 +480,10 @@ mod tests {
             run_songrec_once(&cfg, &client, &song_reset),
         )
         .await;
-        assert!(result.is_ok(), "run_songrec_once should return once the fixture script exits");
+        assert!(
+            result.is_ok(),
+            "run_songrec_once should return once the fixture script exits"
+        );
         result.unwrap().unwrap();
     }
 
@@ -482,7 +504,10 @@ mod tests {
             run_songrec_once(&fixture_cfg(), &client, &song_reset),
         )
         .await;
-        assert!(result.is_ok(), "run_songrec_once should return once the fixture script exits");
+        assert!(
+            result.is_ok(),
+            "run_songrec_once should return once the fixture script exits"
+        );
         result.unwrap().unwrap();
 
         let result = tokio::time::timeout(
@@ -490,7 +515,10 @@ mod tests {
             run_songrec_once(&fixture_cfg(), &client, &song_reset),
         )
         .await;
-        assert!(result.is_ok(), "run_songrec_once should return once the fixture script exits");
+        assert!(
+            result.is_ok(),
+            "run_songrec_once should return once the fixture script exits"
+        );
         result.unwrap().unwrap();
     }
 

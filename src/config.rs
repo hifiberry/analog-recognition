@@ -47,13 +47,30 @@ fn default_pw_dump_binary() -> String {
     "pw-dump".to_string()
 }
 
+/// Thresholds and the capture source for the playback-detection level.
+///
+/// The section is still called `[vu_meter]` for config back-compatibility, but
+/// the level now comes from capturing `capture_target` directly (the analog
+/// input) rather than the shared output vu-meter — see `input_level`. `ws_url`
+/// is retained only so old config files still parse; it is unused.
 #[derive(Debug, Clone, Deserialize)]
 pub struct VuMeterConfig {
-    pub ws_url: String,
+    /// PipeWire node to capture for level detection. Must be the analog input
+    /// chain (e.g. "input-processor"), never the output mix, or network
+    /// playback would be detected as analog activity.
+    #[serde(default = "default_capture_target")]
+    pub capture_target: String,
     pub start_threshold: u8,
     pub stop_threshold: u8,
     pub start_debounce_secs: u64,
     pub stop_debounce_secs: u64,
+    /// Deprecated: the old output-vu-meter WebSocket URL. Ignored.
+    #[serde(default)]
+    pub ws_url: Option<String>,
+}
+
+fn default_capture_target() -> String {
+    "input-processor".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -145,6 +162,62 @@ mod tests {
         assert_eq!(cfg.songrec.device, "input-processor.monitor");
         assert_eq!(cfg.vu_meter.start_threshold, 40);
         assert_eq!(cfg.logging.level, "debug");
+    }
+
+    #[test]
+    fn capture_target_defaults_and_ws_url_is_optional() {
+        // A config with neither capture_target nor ws_url: capture_target
+        // falls back to the analog input node and ws_url is simply absent.
+        let toml_str = r#"
+            [audiocontrol]
+            base_url = "http://localhost:1080/api"
+            player_name = "analog"
+
+            [songrec]
+            device = "input-processor.monitor"
+            request_interval_secs = 10
+            binary = "songrec"
+
+            [vu_meter]
+            start_threshold = 55
+            stop_threshold = 48
+            start_debounce_secs = 1
+            stop_debounce_secs = 20
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.vu_meter.capture_target, "input-processor");
+        assert_eq!(cfg.vu_meter.ws_url, None);
+        assert_eq!(cfg.vu_meter.start_threshold, 55);
+    }
+
+    #[test]
+    fn capture_target_is_read_and_legacy_ws_url_still_parses() {
+        let toml_str = r#"
+            [audiocontrol]
+            base_url = "http://localhost:1080/api"
+            player_name = "analog"
+
+            [songrec]
+            device = "input-processor.monitor"
+            request_interval_secs = 10
+            binary = "songrec"
+
+            [vu_meter]
+            capture_target = "some-other-node"
+            ws_url = "ws://localhost:2717/api/v1/levels"
+            start_threshold = 40
+            stop_threshold = 40
+            start_debounce_secs = 1
+            stop_debounce_secs = 20
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.vu_meter.capture_target, "some-other-node");
+        // Legacy ws_url is accepted (so old files parse) but carried only so
+        // the daemon can warn; it is not used.
+        assert_eq!(
+            cfg.vu_meter.ws_url.as_deref(),
+            Some("ws://localhost:2717/api/v1/levels")
+        );
     }
 
     #[test]

@@ -18,7 +18,7 @@ async fn false_when_stored_false() {
         })))
         .mount(&server)
         .await;
-    assert_eq!(client(server.uri()).songrec_enabled().await, false);
+    assert!(!(client(server.uri()).songrec_enabled().await));
 }
 
 #[tokio::test]
@@ -31,7 +31,7 @@ async fn true_when_stored_true() {
         })))
         .mount(&server)
         .await;
-    assert_eq!(client(server.uri()).songrec_enabled().await, true);
+    assert!(client(server.uri()).songrec_enabled().await);
 }
 
 #[tokio::test]
@@ -42,11 +42,15 @@ async fn default_true_when_key_absent_404() {
         .respond_with(ResponseTemplate::new(404))
         .mount(&server)
         .await;
-    assert_eq!(client(server.uri()).songrec_enabled().await, true);
+    assert!(client(server.uri()).songrec_enabled().await);
 }
 
 #[tokio::test]
 async fn default_true_on_connection_failure() {
     // Port 1 is reserved; nothing listens.
-    assert_eq!(client("http://127.0.0.1:1".to_string()).songrec_enabled().await, true);
+    assert!(
+        client("http://127.0.0.1:1".to_string())
+            .songrec_enabled()
+            .await
+    );
 }
