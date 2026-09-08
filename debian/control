@@ -4,7 +4,10 @@ Priority: optional
 Maintainer: HiFiBerry <info@hifiberry.com>
 Build-Depends: debhelper-compat (= 13),
                curl,
-               ca-certificates
+               ca-certificates,
+               pkg-config,
+               clang,
+               libpipewire-0.3-dev
 Standards-Version: 4.6.0
 Homepage: https://github.com/hifiberry/analog-recognition
 Vcs-Git: https://github.com/hifiberry/analog-recognition.git
