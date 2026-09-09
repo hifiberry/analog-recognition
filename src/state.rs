@@ -58,9 +58,51 @@ impl PlaybackStateMachine {
     /// Set the activation level (dBFS) live — used when the Web UI changes it.
     /// The stop threshold sits `hysteresis_db` below the start threshold so the
     /// state does not flap around the boundary.
+    ///
+    /// Both arguments come from a config file or the ConfigDB, so neither can
+    /// be trusted to be sane. A non-finite level falls back to the default
+    /// rather than mapping to an arbitrary threshold, and the hysteresis is
+    /// floored at zero: a negative one would put the stop threshold *above*
+    /// the start threshold, leaving a band of levels simultaneously "loud
+    /// enough to start" and "quiet enough to stop" that would flap the player
+    /// once per debounce cycle for as long as the input sat there. With a
+    /// non-negative hysteresis that cannot happen, because `db_to_u8` is
+    /// monotonic.
     pub fn set_activation_dbfs(&mut self, dbfs: f64, hysteresis_db: f64) {
+        let dbfs = if dbfs.is_finite() {
+            dbfs
+        } else {
+            crate::level::DEFAULT_ACTIVATION_DBFS
+        };
+        let hysteresis = if hysteresis_db.is_finite() {
+            hysteresis_db.max(0.0)
+        } else {
+            0.0
+        };
         self.start_threshold = crate::level::db_to_u8(dbfs);
-        self.stop_threshold = crate::level::db_to_u8(dbfs - hysteresis_db);
+        self.stop_threshold = crate::level::db_to_u8(dbfs - hysteresis);
+    }
+
+    /// Record evidence of playback that did not come from the level: a track
+    /// was recognized.
+    ///
+    /// Recognition proves the input is live even when its level sits under the
+    /// activation threshold — a quiet pressing, or a threshold set too high —
+    /// so it forces Playing and restarts the stop debounce. Routing it through
+    /// the state machine rather than reporting it directly keeps this task the
+    /// only writer of the player's state; a second writer would leave the two
+    /// disagreeing with nothing to reconcile them.
+    ///
+    /// Returns `Some(Playing)` only when this actually changed the state.
+    pub fn note_activity(&mut self) -> Option<PlayerState> {
+        self.above_since = None;
+        self.below_since = None;
+        if self.current == PlayerState::Stopped {
+            self.current = PlayerState::Playing;
+            Some(PlayerState::Playing)
+        } else {
+            None
+        }
     }
 
     pub fn current(&self) -> PlayerState {
@@ -216,5 +258,92 @@ mod tests {
         let m = PlaybackStateMachine::new(&cfg);
         assert_eq!(m.start_threshold, crate::level::db_to_u8(-40.0));
         assert_eq!(m.stop_threshold, crate::level::db_to_u8(-42.0));
+    }
+
+    #[test]
+    fn a_non_positive_hysteresis_cannot_invert_the_thresholds() {
+        // stop_threshold above start_threshold would make a level between them
+        // both start and stop playback, flapping once per debounce cycle.
+        for hysteresis in [0.0, -5.0, -100.0] {
+            let mut m = sm();
+            m.set_activation_dbfs(-50.0, hysteresis);
+            assert!(
+                m.stop_threshold <= m.start_threshold,
+                "hysteresis {hysteresis}: stop {} > start {}",
+                m.stop_threshold,
+                m.start_threshold
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_finite_activation_level_falls_back_to_the_default() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut m = sm();
+            m.set_activation_dbfs(bad, 2.0);
+            assert_eq!(
+                m.start_threshold,
+                crate::level::db_to_u8(crate::level::DEFAULT_ACTIVATION_DBFS),
+                "{bad} should have fallen back to the default"
+            );
+            assert!(m.stop_threshold <= m.start_threshold);
+        }
+    }
+
+    #[test]
+    fn a_non_finite_hysteresis_does_not_poison_the_stop_threshold() {
+        let mut m = sm();
+        m.set_activation_dbfs(-50.0, f64::NAN);
+        assert_eq!(m.start_threshold, crate::level::db_to_u8(-50.0));
+        assert!(m.stop_threshold <= m.start_threshold);
+    }
+
+    #[test]
+    fn recognition_starts_playback_even_below_the_activation_level() {
+        // A recognized track is proof of playback that the level alone missed.
+        let mut m = sm();
+        assert_eq!(m.note_activity(), Some(PlayerState::Playing));
+        assert_eq!(m.current(), PlayerState::Playing);
+    }
+
+    #[test]
+    fn recognition_while_already_playing_is_not_a_transition() {
+        let mut m = sm();
+        m.note_activity();
+        assert_eq!(m.note_activity(), None, "no state change, so no transition");
+        assert_eq!(m.current(), PlayerState::Playing);
+    }
+
+    #[test]
+    fn recognition_restarts_the_stop_debounce() {
+        let mut m = sm();
+        let t0 = Instant::now();
+        m.note_activity();
+        // Silence starts counting down towards Stopped...
+        assert_eq!(m.on_level(5, t0), None);
+        assert_eq!(m.on_level(5, t0 + Duration::from_secs(15)), None);
+        // ...but a fresh recognition means the input is live after all.
+        assert_eq!(m.note_activity(), None);
+        assert_eq!(m.on_level(5, t0 + Duration::from_secs(16)), None);
+        // The old 20s deadline (t0+20) must no longer apply.
+        assert_eq!(m.on_level(5, t0 + Duration::from_secs(21)), None);
+        assert_eq!(
+            m.on_level(5, t0 + Duration::from_secs(37)),
+            Some(PlayerState::Stopped)
+        );
+    }
+
+    #[test]
+    fn a_level_above_the_threshold_still_stops_after_recognition_ends() {
+        // Recognition does not latch Playing: the ordinary stop debounce
+        // still applies once the input goes quiet.
+        let mut m = sm();
+        let t0 = Instant::now();
+        m.note_activity();
+        assert_eq!(m.on_level(5, t0), None);
+        assert_eq!(
+            m.on_level(5, t0 + Duration::from_secs(21)),
+            Some(PlayerState::Stopped)
+        );
     }
 }

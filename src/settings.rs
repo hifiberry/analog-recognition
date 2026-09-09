@@ -62,13 +62,18 @@ impl SettingsClient {
         }
     }
 
-    /// The Web-UI activation level in dBFS, or `None` when unset or unparseable
-    /// (the caller then keeps its configured default).
+    /// The Web-UI activation level in dBFS, or `None` when unset, unparseable,
+    /// or not a real number (the caller then keeps its configured default).
+    ///
+    /// The finiteness check is not theoretical: `"nan"` and `"inf"` both parse
+    /// as `f64` happily, and a NaN threshold compares false against every
+    /// level, which would silently pin the detector to one state.
     pub async fn activation_dbfs(&self) -> Option<f64> {
         self.fetch_value(&self.threshold_key)
             .await?
             .trim()
             .parse::<f64>()
             .ok()
+            .filter(|v| v.is_finite())
     }
 }

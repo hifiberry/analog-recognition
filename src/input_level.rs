@@ -12,7 +12,7 @@
 //! RMS inline and publishes it to a lock-free `AtomicU8` — no shared sample
 //! buffer, no mutex in the RT path, no processing thread.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -39,7 +39,7 @@ const POLL: Duration = Duration::from_millis(100);
 const RECONNECT: Duration = Duration::from_secs(5);
 
 /// Level (0-255) of one interleaved S32LE block: the RMS of the louder
-/// channel, on the -60..0 dB scale. Pure and allocation-free (a fixed stack
+/// channel, on the -80..0 dB scale. Pure and allocation-free (a fixed stack
 /// array bounds the channel count) so it is both RT-safe and unit-testable
 /// without a PipeWire stream. Trailing bytes that do not complete a frame are
 /// ignored.
@@ -73,12 +73,80 @@ fn block_level_u8(bytes: &[u8], channels: usize) -> u8 {
         .unwrap_or(0)
 }
 
+/// How long a published level stays believable.
+///
+/// The process callback fires once per graph quantum -- a few tens of
+/// milliseconds -- so anything approaching a second without one means the
+/// capture is no longer running. Two seconds is far beyond any legitimate gap
+/// and still far short of the 20s stop debounce, so a stalled capture is
+/// noticed long before it could hold the player in the wrong state.
+const LEVEL_STALE_AFTER: Duration = Duration::from_secs(2);
+
+/// The level the capture publishes and the state task reads, with the time it
+/// was last refreshed.
+///
+/// The timestamp is the point. `start_capture` can only reset the level when
+/// `run_capture` *returns*, and there are ways for the callback to stop firing
+/// while the main loop keeps running quite happily: PipeWire restarting, the
+/// link being torn down, the target node disappearing. The last measured level
+/// would then sit in the atomic forever, and if it happened to be a loud one
+/// the player would stay Playing for good -- the same "alive but no longer
+/// doing the work" failure that `stream_watch` exists to catch for songrec.
+///
+/// Reading a stale level as 0 is right whichever way it happened: a capture
+/// that died tells us nothing about the input, and a stream that legitimately
+/// suspended because the graph went idle really is silence.
+pub struct LevelSource {
+    level: AtomicU8,
+    /// Milliseconds since `origin` at the last publish. Storing an offset
+    /// rather than an `Instant` keeps this a plain atomic, so the realtime
+    /// thread never touches a lock.
+    published_ms: AtomicU64,
+    origin: Instant,
+    stale_after: Duration,
+}
+
+impl LevelSource {
+    pub fn new(stale_after: Duration) -> Self {
+        LevelSource {
+            level: AtomicU8::new(0),
+            published_ms: AtomicU64::new(0),
+            origin: Instant::now(),
+            stale_after,
+        }
+    }
+
+    /// Publish a freshly measured level. Called from the realtime thread: two
+    /// relaxed stores and a monotonic clock read, no locks and no allocation.
+    pub fn publish(&self, level: u8, now: Instant) {
+        self.level.store(level, Ordering::Relaxed);
+        self.published_ms.store(self.millis(now), Ordering::Relaxed);
+    }
+
+    /// The current level, or 0 if nothing has refreshed it within
+    /// `stale_after`.
+    pub fn current(&self, now: Instant) -> u8 {
+        let age = self
+            .millis(now)
+            .saturating_sub(self.published_ms.load(Ordering::Relaxed));
+        if age > self.stale_after.as_millis() as u64 {
+            0
+        } else {
+            self.level.load(Ordering::Relaxed)
+        }
+    }
+
+    fn millis(&self, now: Instant) -> u64 {
+        now.saturating_duration_since(self.origin).as_millis() as u64
+    }
+}
+
 /// Start capturing `target` and return the shared level (0-255). The capture
 /// thread reconnects on its own if PipeWire or the target is not ready yet;
 /// until it produces samples the level stays 0 (i.e. Stopped), which is the
 /// safe default.
-pub fn start_capture(target: &str) -> Arc<AtomicU8> {
-    let level = Arc::new(AtomicU8::new(0));
+pub fn start_capture(target: &str) -> Arc<LevelSource> {
+    let level = Arc::new(LevelSource::new(LEVEL_STALE_AFTER));
     let level_for_thread = level.clone();
     let target = target.to_string();
     thread::Builder::new()
@@ -91,7 +159,7 @@ pub fn start_capture(target: &str) -> Arc<AtomicU8> {
                 }
                 // On any exit the input is unknown — do not leave a stale
                 // "loud" level latched, or the player could stay Playing.
-                level_for_thread.store(0, Ordering::Relaxed);
+                level_for_thread.publish(0, Instant::now());
                 thread::sleep(RECONNECT);
             }
         })
@@ -99,7 +167,7 @@ pub fn start_capture(target: &str) -> Arc<AtomicU8> {
     level
 }
 
-fn run_capture(target: &str, level: &Arc<AtomicU8>) -> anyhow::Result<()> {
+fn run_capture(target: &str, level: &Arc<LevelSource>) -> anyhow::Result<()> {
     let main_loop =
         pw::main_loop::MainLoop::new(None).map_err(|e| anyhow::anyhow!("main loop: {e:?}"))?;
     let context =
@@ -153,7 +221,7 @@ fn run_capture(target: &str, level: &Arc<AtomicU8>) -> anyhow::Result<()> {
             // block_level_u8 does bounded float work over a stack array — no
             // locks, no allocation — so it is safe on the RT thread.
             let loudest = block_level_u8(&slice[..frames * frame_bytes], NUM_CHANNELS);
-            level_cb.store(loudest, Ordering::Relaxed);
+            level_cb.publish(loudest, Instant::now());
         })
         .register()
         .map_err(|e| anyhow::anyhow!("listener: {e:?}"))?;
@@ -189,16 +257,23 @@ fn run_capture(target: &str, level: &Arc<AtomicU8>) -> anyhow::Result<()> {
 }
 
 /// Poll the captured level and drive AudioControl. Also re-reads the Web-UI
-/// activation level (dBFS) on a slower cadence and applies it live. Never
+/// activation level (dBFS) on a slower cadence and applies it live, and takes
+/// recognition of a track as evidence of playback in its own right. Never
 /// returns.
+///
+/// This task is the only writer of the player's state. The recognition task
+/// signals `recognized` instead of reporting Playing itself, so the two can
+/// never end up disagreeing about what AudioControl has been told.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_state_task(
     cfg: &VuMeterConfig,
     client: &AudioControlClient,
     settings: &SettingsClient,
     settings_poll: Duration,
     song_reset: &Arc<Notify>,
+    recognized: &Arc<Notify>,
     state_tx: &watch::Sender<PlayerState>,
-    level: Arc<AtomicU8>,
+    level: Arc<LevelSource>,
 ) -> ! {
     let mut sm = PlaybackStateMachine::new(cfg);
     // The last state we confirmed AudioControl accepted. Compared every tick,
@@ -211,7 +286,22 @@ pub async fn run_state_task(
     loop {
         tokio::select! {
             _ = level_tick.tick() => {
-                let transition = sm.on_level(level.load(Ordering::Relaxed), Instant::now());
+                let now = Instant::now();
+                let transition = sm.on_level(level.current(now), now);
+                report(
+                    client,
+                    song_reset,
+                    state_tx,
+                    transition,
+                    sm.current(),
+                    &mut last_synced,
+                )
+                .await;
+            }
+            _ = recognized.notified() => {
+                // songrec matched a track: the input is live even if its level
+                // never crossed the activation threshold.
+                let transition = sm.note_activity();
                 report(
                     client,
                     song_reset,
@@ -328,6 +418,81 @@ mod tests {
     #[test]
     fn block_level_empty_is_zero() {
         assert_eq!(block_level_u8(&[], 2), 0);
+    }
+
+    #[test]
+    fn a_freshly_published_level_is_reported_as_is() {
+        let src = LevelSource::new(Duration::from_secs(2));
+        let t0 = Instant::now();
+        src.publish(200, t0);
+        assert_eq!(src.current(t0), 200);
+        assert_eq!(src.current(t0 + Duration::from_millis(1900)), 200);
+    }
+
+    #[test]
+    fn a_level_nothing_refreshes_goes_stale_and_reads_zero() {
+        // The capture callback stopping (PipeWire restart, link torn down)
+        // must not leave a loud level latched forever.
+        let src = LevelSource::new(Duration::from_secs(2));
+        let t0 = Instant::now();
+        src.publish(200, t0);
+        assert_eq!(src.current(t0 + Duration::from_secs(3)), 0);
+        assert_eq!(src.current(t0 + Duration::from_secs(3600)), 0);
+    }
+
+    #[test]
+    fn republishing_makes_a_stale_level_current_again() {
+        let src = LevelSource::new(Duration::from_secs(2));
+        let t0 = Instant::now();
+        src.publish(200, t0);
+        assert_eq!(src.current(t0 + Duration::from_secs(3)), 0);
+        src.publish(180, t0 + Duration::from_secs(3));
+        assert_eq!(src.current(t0 + Duration::from_secs(3)), 180);
+    }
+
+    #[test]
+    fn a_source_that_never_published_reads_zero() {
+        let src = LevelSource::new(Duration::from_secs(2));
+        let t0 = Instant::now();
+        assert_eq!(src.current(t0), 0);
+        assert_eq!(src.current(t0 + Duration::from_secs(60)), 0);
+    }
+
+    #[test]
+    fn a_stalled_capture_drives_the_player_back_to_stopped() {
+        // End to end over the pure parts: a loud level goes Playing, the
+        // capture then dies, and the staleness alone must stop the player.
+        let cfg = VuMeterConfig {
+            capture_target: "input-processor".to_string(),
+            threshold_dbfs: -50.0,
+            hysteresis_db: 2.0,
+            start_debounce_secs: 1,
+            stop_debounce_secs: 20,
+            ws_url: None,
+        };
+        let mut sm = PlaybackStateMachine::new(&cfg);
+        let src = LevelSource::new(Duration::from_secs(2));
+        let t0 = Instant::now();
+
+        src.publish(200, t0);
+        assert_eq!(sm.on_level(src.current(t0), t0), None);
+        let t = t0 + Duration::from_secs(2);
+        assert_eq!(sm.on_level(src.current(t), t), Some(PlayerState::Playing));
+
+        // Capture stops publishing here. Nothing else changes.
+        let t = t0 + Duration::from_secs(10);
+        assert_eq!(src.current(t), 0, "level should have gone stale");
+        assert_eq!(
+            sm.on_level(src.current(t), t),
+            None,
+            "stop debounce running"
+        );
+        let t = t0 + Duration::from_secs(31);
+        assert_eq!(
+            sm.on_level(src.current(t), t),
+            Some(PlayerState::Stopped),
+            "a capture that stopped publishing must not hold the player Playing"
+        );
     }
 
     #[tokio::test]

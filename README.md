@@ -25,7 +25,8 @@ The Web UI exposes a "Recognize tracks" toggle for this player
 (ConfigDB key `player.analog-recognition.songrec_enabled`, default `on`).
 When switched off, the service stops invoking `songrec` and instead
 publishes `"Unknown artist"` / `"Unknown song"` for the currently playing
-track, while play/stop state (from the VU meter) keeps working as normal.
+track, while play/stop state (from the analog input level) keeps working
+as normal.
 The service polls this setting from the configurator (see
 `[configurator]` below) rather than requiring a restart.
 
@@ -36,9 +37,17 @@ sensible defaults). Key values:
 
 - `songrec.device` — the PipeWire monitor source to listen on (default
   `input-processor.monitor`).
-- `vu_meter.start_threshold` / `stop_threshold` — level (0-255, mapping
-  -60dB..0dB) used to distinguish real playback from idle/surface noise.
-  Tune against your actual turntable/cartridge noise floor.
+- `vu_meter.capture_target` — the PipeWire node whose level decides
+  play/stop (default `input-processor`, the analog input chain). It must
+  never be the output mix, or a network player's audio would be detected
+  as analog activity.
+- `vu_meter.threshold_dbfs` — how loud the input must be to count as
+  playing (default -50, range -80..-20). Tune against your actual
+  turntable/cartridge noise floor. The Web UI exposes this as a slider,
+  and the value set there overrides the config file at runtime.
+- `vu_meter.hysteresis_db` — how far below `threshold_dbfs` the input must
+  fall to count as stopped (default 2), so the state does not flap around
+  the threshold.
 - `vu_meter.stop_debounce_secs` — how long the level must stay below
   threshold before reporting Stopped (default 20s, to survive normal
   inter-track pauses without flapping).
@@ -47,6 +56,8 @@ sensible defaults). Key values:
   `http://localhost:1081/api/v1`).
 - `configurator.songrec_enabled_key` — ConfigDB key backing the toggle
   (default `player.analog-recognition.songrec_enabled`).
+- `configurator.threshold_key` — ConfigDB key backing the activation-level
+  slider (default `player.analog-recognition.threshold_dbfs`).
 - `configurator.setting_poll_secs` — how often the setting is re-read from
   the configurator (default 10s).
 

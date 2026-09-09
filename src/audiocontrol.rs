@@ -1,5 +1,16 @@
 use crate::songrec::RecognizedTrack;
 use crate::state::PlayerState;
+use std::time::Duration;
+
+/// How long an AudioControl request may take before it is abandoned.
+///
+/// This is not belt-and-braces: `input_level::report` awaits these on every
+/// level tick, so a request that never completes stalls playback detection
+/// outright and nothing ever restarts it. A refused connection fails fast on
+/// its own, but a server that accepts the connection and then goes quiet --
+/// audiocontrol mid-restart, or wedged -- gives reqwest no reason to return,
+/// and reqwest sets no timeout by default.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct AudioControlClient {
     http: reqwest::Client,
@@ -9,8 +20,18 @@ pub struct AudioControlClient {
 
 impl AudioControlClient {
     pub fn new(base_url: String, player_name: String) -> Self {
+        AudioControlClient::with_timeout(base_url, player_name, REQUEST_TIMEOUT)
+    }
+
+    /// As `new`, with an explicit request timeout. Tests use it to assert the
+    /// timeout behaviour without waiting out the real one.
+    pub fn with_timeout(base_url: String, player_name: String, timeout: Duration) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         AudioControlClient {
-            http: reqwest::Client::new(),
+            http,
             base_url,
             player_name,
         }
@@ -178,6 +199,57 @@ mod tests {
         let client = AudioControlClient::new(server.uri(), "analog".to_string());
         let result = client.send_state_changed(PlayerState::Stopped).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_server_that_never_answers_times_out_instead_of_hanging() {
+        // report() awaits this on every level tick, so a request that never
+        // returns would stop playback detection for good.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
+            .mount(&server)
+            .await;
+
+        let client = AudioControlClient::with_timeout(
+            server.uri(),
+            "analog".to_string(),
+            Duration::from_millis(150),
+        );
+        let started = std::time::Instant::now();
+        let result = client.send_state_changed(PlayerState::Playing).await;
+        assert!(result.is_err(), "a request that never answers must fail");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "should have given up after the timeout, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_default_client_also_has_a_timeout() {
+        // The test above proves the mechanism; this one proves `new` -- the
+        // constructor everything actually uses -- opts into it. reqwest sets
+        // no timeout of its own, so without this the production client would
+        // wait forever and nothing would notice. It costs REQUEST_TIMEOUT of
+        // real time, which is why it is the only test here that waits.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/player/analog/update"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
+            .mount(&server)
+            .await;
+
+        let client = AudioControlClient::new(server.uri(), "analog".to_string());
+        let started = std::time::Instant::now();
+        let result = client.send_state_changed(PlayerState::Playing).await;
+        assert!(result.is_err(), "the default client must not wait forever");
+        assert!(
+            started.elapsed() < REQUEST_TIMEOUT * 3,
+            "took {:?}, expected to give up around {REQUEST_TIMEOUT:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]

@@ -12,10 +12,9 @@
 //! so it is safe to run anywhere.
 
 use std::process::Command;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use analog_recognition::input_level::start_capture;
+use analog_recognition::input_level::{start_capture, LevelSource};
 
 const SINK: &str = "ar_test_sink";
 const RATE: u32 = 48_000;
@@ -68,11 +67,11 @@ fn write_tone_wav(path: &std::path::Path, secs: u32) {
     std::fs::write(path, w).expect("write tone wav");
 }
 
-fn max_level_over(level: &std::sync::Arc<std::sync::atomic::AtomicU8>, dur: Duration) -> u8 {
+fn max_level_over(level: &std::sync::Arc<LevelSource>, dur: Duration) -> u8 {
     let deadline = Instant::now() + dur;
     let mut peak = 0u8;
     while Instant::now() < deadline {
-        peak = peak.max(level.load(Ordering::Relaxed));
+        peak = peak.max(level.current(Instant::now()));
         std::thread::sleep(Duration::from_millis(50));
     }
     peak
