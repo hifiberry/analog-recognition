@@ -4,6 +4,10 @@ hifiberry-analog-recognition (0.5.0) stable; urgency=medium
     from the analog input's meter on aas's levels WebSocket, and songrec
     listens on aas's aas.analog source. Under PipeWire nothing changes.
     The choice is read from /etc/hifiberry/audio-server at start.
+  * songrec is restarted when it reports audio errors in a burst. After a
+    restart of the audio server it records from, songrec does not exit: it
+    logs the same error thousands of times a second and grows until the
+    device runs out of memory. Only the first few errors are logged now.
 
  -- HiFiBerry <support@hifiberry.com>  Sun, 22 Nov 2026 07:04:59 +0000
 
