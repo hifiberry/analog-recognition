@@ -1,3 +1,12 @@
+hifiberry-analog-recognition (0.5.0) stable; urgency=medium
+
+  * Works under aas. On a device switched to aas the play/stop level comes
+    from the analog input's meter on aas's levels WebSocket, and songrec
+    listens on aas's aas.analog source. Under PipeWire nothing changes.
+    The choice is read from /etc/hifiberry/audio-server at start.
+
+ -- HiFiBerry <support@hifiberry.com>  Sun, 22 Nov 2026 07:04:59 +0000
+
 hifiberry-analog-recognition (0.4.2) stable; urgency=medium
 
   * Playback state has a single writer again. Recognition reported "playing"
