@@ -354,6 +354,7 @@ mod tests {
             stream_check_secs: 0,
             stream_grace_secs: 0,
             pw_dump_binary: "pw-dump".to_string(),
+            aas_device: "aas.analog".to_string(),
         }
     }
 
@@ -487,6 +488,7 @@ mod tests {
             stream_check_secs: 0,
             stream_grace_secs: 0,
             pw_dump_binary: "pw-dump".to_string(),
+            aas_device: "aas.analog".to_string(),
         };
         let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
         let recognized = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -668,6 +670,7 @@ mod tests {
             stream_check_secs: 0,
             stream_grace_secs: 0,
             pw_dump_binary: "pw-dump".to_string(),
+            aas_device: "aas.analog".to_string(),
         }
     }
 

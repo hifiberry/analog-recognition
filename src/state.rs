@@ -254,6 +254,7 @@ mod tests {
             start_debounce_secs: 1,
             stop_debounce_secs: 20,
             ws_url: None,
+            aas_levels_url: String::new(),
         };
         let m = PlaybackStateMachine::new(&cfg);
         assert_eq!(m.start_threshold, crate::level::db_to_u8(-40.0));
