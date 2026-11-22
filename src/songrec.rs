@@ -169,28 +169,53 @@ impl ErrorBurst {
 /// burst does not flood the journal.
 const AUDIO_ERRORS_LOGGED: usize = 3;
 
-/// Passes songrec's stderr on to ours and resolves once audio errors come in
-/// a burst. Never resolves if stderr closes first: the stdout loop sees the
-/// exit.
-async fn wait_for_audio_error_burst(stderr: tokio::process::ChildStderr) {
-    let mut lines = BufReader::new(stderr).lines();
+/// How songrec's stderr ended.
+#[derive(Debug, PartialEq, Eq)]
+enum StderrEnd {
+    /// Audio errors came in a burst: the device is gone.
+    Burst,
+    /// The pipe closed, as songrec exited, after everything was relayed.
+    Closed,
+}
+
+/// Relays songrec's stderr, line by line, to `relay`, and ends at a burst of
+/// audio errors or when the pipe closes. A line that is not UTF-8 is relayed
+/// lossily; after a read error the pipe is still drained, so songrec never
+/// blocks writing to it.
+async fn watch_stderr<R: tokio::io::AsyncRead + Unpin>(
+    stderr: R,
+    mut relay: impl FnMut(&str),
+) -> StderrEnd {
+    let mut reader = BufReader::new(stderr);
     let mut burst = ErrorBurst::default();
     let mut logged = 0;
-    while let Ok(Some(line)) = lines.next_line().await {
-        if !is_audio_error(&line) {
-            eprintln!("{line}");
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => return StderrEnd::Closed,
+            Ok(_) => {}
+            Err(_) => {
+                let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
+                return StderrEnd::Closed;
+            }
+        }
+        let text = String::from_utf8_lossy(&buf);
+        let line = text.trim_end_matches(['\n', '\r']);
+        if !is_audio_error(line) {
+            relay(line);
             continue;
         }
         if logged < AUDIO_ERRORS_LOGGED {
-            eprintln!("{line}");
+            relay(line);
             logged += 1;
         }
         if burst.audio_error(std::time::Instant::now()) {
-            return;
+            return StderrEnd::Burst;
         }
     }
-    std::future::pending::<()>().await
 }
+
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// A run this long counts as songrec having worked, rather than having failed
@@ -344,8 +369,9 @@ pub async fn run_songrec_once_with(
         .stderr
         .take()
         .ok_or_else(|| anyhow::anyhow!("songrec child has no stderr"))?;
-    let audio_errors = wait_for_audio_error_burst(stderr);
+    let audio_errors = watch_stderr(stderr, |line| eprintln!("{line}"));
     tokio::pin!(audio_errors);
+    let mut stderr_open = true;
 
     // A child with no pid has already been reaped; there is nothing to watch,
     // and the stdout loop below will see the pipe close.
@@ -368,9 +394,12 @@ pub async fn run_songrec_once_with(
 
     loop {
         tokio::select! {
-            _ = &mut audio_errors => {
-                // As for a lost stream: dropping the child kills it.
-                return Ok(Outcome::AudioErrors);
+            end = &mut audio_errors, if stderr_open => {
+                if end == StderrEnd::Burst {
+                    // As for a lost stream: dropping the child kills it.
+                    return Ok(Outcome::AudioErrors);
+                }
+                stderr_open = false;
             }
             _ = &mut stream_watch => {
                 // Dropping the child kills it (kill_on_drop), so the caller
@@ -405,6 +434,11 @@ pub async fn run_songrec_once_with(
         }
     }
 
+    // stdout closed first: relay what songrec wrote to stderr as it exited,
+    // usually the line that says why.
+    if stderr_open {
+        let _ = tokio::time::timeout(Duration::from_secs(1), &mut audio_errors).await;
+    }
     child.wait().await?;
     Ok(Outcome::Exited)
 }
@@ -795,6 +829,53 @@ mod tests {
             assert!(!burst.audio_error(at(i as u64)));
         }
         assert!(burst.audio_error(at(500)));
+    }
+
+    #[test]
+    fn nineteen_audio_errors_in_a_second_are_not_a_burst_the_twentieth_is() {
+        let start = std::time::Instant::now();
+        let mut burst = ErrorBurst::default();
+        for i in 0..19u64 {
+            assert!(!burst.audio_error(start + std::time::Duration::from_millis(i)));
+        }
+        assert!(burst.audio_error(start + std::time::Duration::from_millis(900)));
+    }
+
+    #[tokio::test]
+    async fn every_line_is_relayed_until_the_pipe_closes() {
+        let mut relayed = Vec::new();
+        let end = watch_stderr(&b"one\ntwo\nthree"[..], |l| relayed.push(l.to_string())).await;
+        assert_eq!(end, StderrEnd::Closed);
+        assert_eq!(relayed, ["one", "two", "three"]);
+    }
+
+    #[tokio::test]
+    async fn a_line_that_is_not_utf8_is_relayed_and_reading_goes_on() {
+        let mut relayed = Vec::new();
+        let end = watch_stderr(&b"bad \xff\xfe\nok\n"[..], |l| relayed.push(l.to_string())).await;
+        assert_eq!(end, StderrEnd::Closed);
+        assert_eq!(relayed.len(), 2, "{relayed:?}");
+        assert!(relayed[0].starts_with("bad "));
+        assert_eq!(relayed[1], "ok");
+    }
+
+    #[tokio::test]
+    async fn a_burst_ends_the_watch_and_only_the_first_errors_are_relayed() {
+        let flood = "Error: Audio error: POLLERR\n".repeat(50);
+        let mut relayed = Vec::new();
+        let end = watch_stderr(flood.as_bytes(), |l| relayed.push(l.to_string())).await;
+        assert_eq!(end, StderrEnd::Burst);
+        assert_eq!(relayed.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_songrec_that_reports_an_error_and_exits_is_seen_to_exit() {
+        let outcome = run_fixture(
+            "fake_songrec_error_then_exit.sh",
+            std::time::Duration::from_secs(3),
+        )
+        .await;
+        assert_eq!(outcome, Some(Outcome::Exited));
     }
 
     #[test]
