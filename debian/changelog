@@ -2,14 +2,17 @@ hifiberry-analog-recognition (0.5.0) stable; urgency=medium
 
   * Works under aas. On a device switched to aas the play/stop level comes
     from the analog input's meter on aas's levels WebSocket, and songrec
-    listens on aas's aas.analog source. Under PipeWire nothing changes.
+    listens on aas's aas.analog source. Under PipeWire both stay as they were.
     The choice is read from /etc/hifiberry/audio-server at start.
   * songrec is restarted when it reports audio errors in a burst. After a
     restart of the audio server it records from, songrec does not exit: it
     logs the same error thousands of times a second and grows until the
     device runs out of memory. Only the first few errors are logged now.
+  * songrec's stderr is relayed to the journal line by line, including the
+    last lines before it exits, which say why it failed; a line that is not
+    UTF-8 no longer stops the relay.
 
- -- HiFiBerry <support@hifiberry.com>  Sun, 22 Nov 2026 07:04:59 +0000
+ -- HiFiBerry <support@hifiberry.com>  Sun, 22 Nov 2026 07:54:08 +0000
 
 hifiberry-analog-recognition (0.4.2) stable; urgency=medium
 
