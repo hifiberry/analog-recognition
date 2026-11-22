@@ -61,6 +61,22 @@ sensible defaults). Key values:
 - `configurator.setting_poll_secs` — how often the setting is re-read from
   the configurator (default 10s).
 
+## Under aas
+
+On a device switched to aas (`/etc/hifiberry/audio-server` says `aas`), the
+service reads that file at start and uses aas instead of PipeWire:
+
+- The play/stop level is the analog input's meter (meter 16) on aas's levels
+  WebSocket, `vu_meter.aas_levels_url` (default
+  `ws://127.0.0.1:2718/levels`). aas measures the input as captured; it reads
+  0 below -60 dBFS, so an activation level under -60 has no effect there.
+- songrec listens on the PulseAudio source `songrec.aas_device` (default
+  `aas.analog`, the analog input after its chain) instead of
+  `songrec.device`.
+- The songrec stream check is off: it asks PipeWire, which does not run.
+
+A switch between the servers takes a reboot, so the choice is read once.
+
 ## Building
 
 ```bash

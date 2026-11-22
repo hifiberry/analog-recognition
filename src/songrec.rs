@@ -126,9 +126,96 @@ impl Deduper {
 pub enum Outcome {
     Exited,
     StreamLost,
+    /// songrec kept running but reported audio errors in a burst: its device
+    /// is gone, as after a restart of the audio server it records from.
+    AudioErrors,
 }
 
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Audio errors within `AUDIO_ERROR_WINDOW` that mean songrec's device is
+/// gone. After a restart of the audio server songrec reports thousands a
+/// second and never exits; a single error, an overrun, is no reason to stop.
+const AUDIO_ERROR_BURST: usize = 20;
+const AUDIO_ERROR_WINDOW: Duration = Duration::from_secs(1);
+
+/// Whether a line of songrec's stderr reports an audio error.
+fn is_audio_error(line: &str) -> bool {
+    line.contains("Audio error")
+}
+
+/// Counts audio errors in the current window.
+#[derive(Default)]
+struct ErrorBurst {
+    window: Option<std::time::Instant>,
+    count: usize,
+}
+
+impl ErrorBurst {
+    /// Takes an audio error at `now`; true once they make a burst.
+    fn audio_error(&mut self, now: std::time::Instant) -> bool {
+        match self.window {
+            Some(start) if now.duration_since(start) < AUDIO_ERROR_WINDOW => self.count += 1,
+            _ => {
+                self.window = Some(now);
+                self.count = 1;
+            }
+        }
+        self.count >= AUDIO_ERROR_BURST
+    }
+}
+
+/// Audio errors passed on to the log per run; the rest are counted only, so a
+/// burst does not flood the journal.
+const AUDIO_ERRORS_LOGGED: usize = 3;
+
+/// How songrec's stderr ended.
+#[derive(Debug, PartialEq, Eq)]
+enum StderrEnd {
+    /// Audio errors came in a burst: the device is gone.
+    Burst,
+    /// The pipe closed, as songrec exited, after everything was relayed.
+    Closed,
+}
+
+/// Relays songrec's stderr, line by line, to `relay`, and ends at a burst of
+/// audio errors or when the pipe closes. A line that is not UTF-8 is relayed
+/// lossily; after a read error the pipe is still drained, so songrec never
+/// blocks writing to it.
+async fn watch_stderr<R: tokio::io::AsyncRead + Unpin>(
+    stderr: R,
+    mut relay: impl FnMut(&str),
+) -> StderrEnd {
+    let mut reader = BufReader::new(stderr);
+    let mut burst = ErrorBurst::default();
+    let mut logged = 0;
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => return StderrEnd::Closed,
+            Ok(_) => {}
+            Err(_) => {
+                let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
+                return StderrEnd::Closed;
+            }
+        }
+        let text = String::from_utf8_lossy(&buf);
+        let line = text.trim_end_matches(['\n', '\r']);
+        if !is_audio_error(line) {
+            relay(line);
+            continue;
+        }
+        if logged < AUDIO_ERRORS_LOGGED {
+            relay(line);
+            logged += 1;
+        }
+        if burst.audio_error(std::time::Instant::now()) {
+            return StderrEnd::Burst;
+        }
+    }
+}
+
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// A run this long counts as songrec having worked, rather than having failed
@@ -199,6 +286,11 @@ pub async fn run_recognition_task(
                          -- PipeWire most likely restarted under it; restarting it",
                         cfg.device
                     ),
+                    Ok(Outcome::AudioErrors) => log::warn!(
+                        "songrec reports audio errors without end on {} \
+                         -- its device went away, most likely an audio server restart; restarting it",
+                        cfg.device
+                    ),
                     Err(e) => log::warn!("songrec failed: {e}, restarting"),
                 }
                 tokio::time::sleep(backoff).await;
@@ -263,6 +355,7 @@ pub async fn run_songrec_once_with(
         .arg("-i")
         .arg(cfg.request_interval_secs.to_string())
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
 
@@ -272,6 +365,13 @@ pub async fn run_songrec_once_with(
         .ok_or_else(|| anyhow::anyhow!("songrec child has no stdout"))?;
     let mut lines = BufReader::new(stdout).lines();
     let mut dedup = Deduper::new();
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("songrec child has no stderr"))?;
+    let audio_errors = watch_stderr(stderr, |line| eprintln!("{line}"));
+    tokio::pin!(audio_errors);
+    let mut stderr_open = true;
 
     // A child with no pid has already been reaped; there is nothing to watch,
     // and the stdout loop below will see the pipe close.
@@ -294,6 +394,13 @@ pub async fn run_songrec_once_with(
 
     loop {
         tokio::select! {
+            end = &mut audio_errors, if stderr_open => {
+                if end == StderrEnd::Burst {
+                    // As for a lost stream: dropping the child kills it.
+                    return Ok(Outcome::AudioErrors);
+                }
+                stderr_open = false;
+            }
             _ = &mut stream_watch => {
                 // Dropping the child kills it (kill_on_drop), so the caller
                 // gets a clean restart rather than a second songrec competing
@@ -327,6 +434,11 @@ pub async fn run_songrec_once_with(
         }
     }
 
+    // stdout closed first: relay what songrec wrote to stderr as it exited,
+    // usually the line that says why.
+    if stderr_open {
+        let _ = tokio::time::timeout(Duration::from_secs(1), &mut audio_errors).await;
+    }
     child.wait().await?;
     Ok(Outcome::Exited)
 }
@@ -354,6 +466,7 @@ mod tests {
             stream_check_secs: 0,
             stream_grace_secs: 0,
             pw_dump_binary: "pw-dump".to_string(),
+            aas_device: "aas.analog".to_string(),
         }
     }
 
@@ -487,6 +600,7 @@ mod tests {
             stream_check_secs: 0,
             stream_grace_secs: 0,
             pw_dump_binary: "pw-dump".to_string(),
+            aas_device: "aas.analog".to_string(),
         };
         let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
         let recognized = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -668,6 +782,7 @@ mod tests {
             stream_check_secs: 0,
             stream_grace_secs: 0,
             pw_dump_binary: "pw-dump".to_string(),
+            aas_device: "aas.analog".to_string(),
         }
     }
 
@@ -696,6 +811,131 @@ mod tests {
             next_backoff(Duration::from_secs(30), Duration::from_millis(50)),
             Duration::from_secs(30)
         );
+    }
+
+    fn with_binary(fixture: &str) -> SongrecConfig {
+        SongrecConfig {
+            binary: format!("{}/tests/fixtures/{fixture}", env!("CARGO_MANIFEST_DIR")),
+            ..silent_forever_cfg()
+        }
+    }
+
+    #[test]
+    fn a_burst_of_audio_errors_is_a_dead_device() {
+        let start = std::time::Instant::now();
+        let mut burst = ErrorBurst::default();
+        let at = |ms| start + std::time::Duration::from_millis(ms);
+        for i in 0..AUDIO_ERROR_BURST - 1 {
+            assert!(!burst.audio_error(at(i as u64)));
+        }
+        assert!(burst.audio_error(at(500)));
+    }
+
+    #[test]
+    fn nineteen_audio_errors_in_a_second_are_not_a_burst_the_twentieth_is() {
+        let start = std::time::Instant::now();
+        let mut burst = ErrorBurst::default();
+        for i in 0..19u64 {
+            assert!(!burst.audio_error(start + std::time::Duration::from_millis(i)));
+        }
+        assert!(burst.audio_error(start + std::time::Duration::from_millis(900)));
+    }
+
+    #[tokio::test]
+    async fn every_line_is_relayed_until_the_pipe_closes() {
+        let mut relayed = Vec::new();
+        let end = watch_stderr(&b"one\ntwo\nthree"[..], |l| relayed.push(l.to_string())).await;
+        assert_eq!(end, StderrEnd::Closed);
+        assert_eq!(relayed, ["one", "two", "three"]);
+    }
+
+    #[tokio::test]
+    async fn a_line_that_is_not_utf8_is_relayed_and_reading_goes_on() {
+        let mut relayed = Vec::new();
+        let end = watch_stderr(&b"bad \xff\xfe\nok\n"[..], |l| relayed.push(l.to_string())).await;
+        assert_eq!(end, StderrEnd::Closed);
+        assert_eq!(relayed.len(), 2, "{relayed:?}");
+        assert!(relayed[0].starts_with("bad "));
+        assert_eq!(relayed[1], "ok");
+    }
+
+    #[tokio::test]
+    async fn a_burst_ends_the_watch_and_only_the_first_errors_are_relayed() {
+        let flood = "Error: Audio error: POLLERR\n".repeat(50);
+        let mut relayed = Vec::new();
+        let end = watch_stderr(flood.as_bytes(), |l| relayed.push(l.to_string())).await;
+        assert_eq!(end, StderrEnd::Burst);
+        assert_eq!(relayed.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_songrec_that_reports_an_error_and_exits_is_seen_to_exit() {
+        let outcome = run_fixture(
+            "fake_songrec_error_then_exit.sh",
+            std::time::Duration::from_secs(3),
+        )
+        .await;
+        assert_eq!(outcome, Some(Outcome::Exited));
+    }
+
+    #[test]
+    fn audio_errors_spread_out_are_not_a_burst() {
+        let start = std::time::Instant::now();
+        let mut burst = ErrorBurst::default();
+        for i in 0..AUDIO_ERROR_BURST * 3 {
+            let at = start + std::time::Duration::from_millis(200 * i as u64);
+            assert!(!burst.audio_error(at), "error {i}");
+        }
+    }
+
+    #[test]
+    fn only_audio_errors_count() {
+        assert!(is_audio_error(
+            "[x ERROR songrec::cli_main src/cli_main.rs:180] Error: Audio error: A \
+             backend-specific error has occurred: `alsa::poll()` returned POLLERR"
+        ));
+        assert!(!is_audio_error(
+            "[x INFO songrec::cli_main src/cli_main.rs:188] Recording started!"
+        ));
+    }
+
+    async fn run_fixture(fixture: &str, within: std::time::Duration) -> Option<Outcome> {
+        let server = MockServer::start().await;
+        let client = AudioControlClient::new(server.uri(), "analog".to_string());
+        let song_reset = std::sync::Arc::new(tokio::sync::Notify::new());
+        let recognized = std::sync::Arc::new(tokio::sync::Notify::new());
+        let cfg = with_binary(fixture);
+        let run = run_songrec_once_with(
+            &cfg,
+            &client,
+            &song_reset,
+            &recognized,
+            &StreamCheck::Fixed(true),
+        );
+        tokio::time::timeout(within, run)
+            .await
+            .ok()
+            .map(|r| r.unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_songrec_that_floods_audio_errors_is_restarted() {
+        let outcome = run_fixture(
+            "fake_songrec_audio_errors.sh",
+            std::time::Duration::from_secs(3),
+        )
+        .await;
+        assert_eq!(outcome, Some(Outcome::AudioErrors));
+    }
+
+    #[tokio::test]
+    async fn a_songrec_with_one_audio_error_is_left_alone() {
+        let outcome = run_fixture(
+            "fake_songrec_one_audio_error.sh",
+            std::time::Duration::from_millis(1500),
+        )
+        .await;
+        assert_eq!(outcome, None, "songrec was restarted after one error");
     }
 
     #[tokio::test]

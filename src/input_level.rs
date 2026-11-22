@@ -80,7 +80,7 @@ fn block_level_u8(bytes: &[u8], channels: usize) -> u8 {
 /// capture is no longer running. Two seconds is far beyond any legitimate gap
 /// and still far short of the 20s stop debounce, so a stalled capture is
 /// noticed long before it could hold the player in the wrong state.
-const LEVEL_STALE_AFTER: Duration = Duration::from_secs(2);
+pub const LEVEL_STALE_AFTER: Duration = Duration::from_secs(2);
 
 /// The level the capture publishes and the state task reads, with the time it
 /// was last refreshed.
@@ -469,6 +469,7 @@ mod tests {
             start_debounce_secs: 1,
             stop_debounce_secs: 20,
             ws_url: None,
+            aas_levels_url: String::new(),
         };
         let mut sm = PlaybackStateMachine::new(&cfg);
         let src = LevelSource::new(Duration::from_secs(2));

@@ -15,12 +15,18 @@ binary = "songrec"
 stream_check_secs = 30
 stream_grace_secs = 20
 pw_dump_binary = "pw-dump"
+# Under aas (/etc/hifiberry/audio-server says "aas") songrec listens on this
+# PulseAudio source instead of device, and the stream check is off.
+aas_device = "aas.analog"
 
 [vu_meter]
 # The level for playback detection is captured directly from this PipeWire node
 # -- the analog input chain, never the output mix -- so network players
 # (Spotify/Tidal) are not mistaken for analog activity.
 capture_target = "input-processor"
+# Under aas the level is the analog input's meter on aas's levels WebSocket.
+# aas reads 0 below -60 dBFS, so an activation level under -60 has no effect.
+aas_levels_url = "ws://127.0.0.1:2718/levels"
 # Activation level in dBFS: the analog input must reach this to count as
 # playing (range -80..-20). The Web UI exposes this and its value overrides
 # the line below at runtime. hysteresis_db is how far below it the input must

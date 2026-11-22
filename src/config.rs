@@ -37,6 +37,23 @@ pub struct SongrecConfig {
     pub stream_grace_secs: u64,
     #[serde(default = "default_pw_dump_binary")]
     pub pw_dump_binary: String,
+    /// The PulseAudio source songrec listens on under aas: the analog input
+    /// after its chain. `device` is the one under PipeWire.
+    #[serde(default = "default_aas_device")]
+    pub aas_device: String,
+}
+
+impl SongrecConfig {
+    /// This config as it applies under `server`. Under aas songrec listens
+    /// on `aas_device`, and the stream check, which asks PipeWire, is off.
+    pub fn for_server(&self, server: crate::server::AudioServer) -> SongrecConfig {
+        let mut cfg = self.clone();
+        if server == crate::server::AudioServer::Aas {
+            cfg.device = self.aas_device.clone();
+            cfg.stream_check_secs = 0;
+        }
+        cfg
+    }
 }
 
 fn default_stream_check_secs() -> u64 {
@@ -47,6 +64,9 @@ fn default_stream_grace_secs() -> u64 {
 }
 fn default_pw_dump_binary() -> String {
     "pw-dump".to_string()
+}
+fn default_aas_device() -> String {
+    "aas.analog".to_string()
 }
 
 /// Thresholds and the capture source for the playback-detection level.
@@ -79,8 +99,14 @@ pub struct VuMeterConfig {
     /// Deprecated: the old output-vu-meter WebSocket URL. Ignored.
     #[serde(default)]
     pub ws_url: Option<String>,
+    /// aas's levels WebSocket, whose analog meter gives the level under aas.
+    #[serde(default = "default_aas_levels_url")]
+    pub aas_levels_url: String,
 }
 
+fn default_aas_levels_url() -> String {
+    "ws://127.0.0.1:2718/levels".to_string()
+}
 fn default_capture_target() -> String {
     "input-processor".to_string()
 }
@@ -206,6 +232,44 @@ mod tests {
         assert_eq!(cfg.songrec.device, "input-processor.monitor");
         assert_eq!(cfg.vu_meter.threshold_dbfs, -50.0);
         assert_eq!(cfg.logging.level, "debug");
+    }
+
+    fn minimal() -> Config {
+        toml::from_str(
+            r#"
+            [audiocontrol]
+            base_url = "http://localhost:1080/api"
+            player_name = "analog"
+
+            [songrec]
+            device = "input-processor.monitor"
+            request_interval_secs = 10
+            binary = "songrec"
+
+            [vu_meter]
+        "#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_aas_settings_have_defaults() {
+        let cfg = minimal();
+        assert_eq!(cfg.songrec.aas_device, "aas.analog");
+        assert_eq!(cfg.vu_meter.aas_levels_url, "ws://127.0.0.1:2718/levels");
+    }
+
+    #[test]
+    fn under_aas_songrec_listens_on_the_aas_source_without_the_pipewire_check() {
+        use crate::server::AudioServer;
+        let cfg = minimal().songrec;
+        let aas = cfg.for_server(AudioServer::Aas);
+        assert_eq!(aas.device, "aas.analog");
+        assert_eq!(aas.stream_check_secs, 0);
+        assert_eq!(aas.request_interval_secs, 10);
+        let pipewire = cfg.for_server(AudioServer::PipeWire);
+        assert_eq!(pipewire.device, "input-processor.monitor");
+        assert_eq!(pipewire.stream_check_secs, 30);
     }
 
     #[test]

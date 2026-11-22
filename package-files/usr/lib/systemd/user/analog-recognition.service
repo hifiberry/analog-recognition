@@ -1,6 +1,6 @@
 [Unit]
 Description=HiFiBerry Analog Input Recognition
-After=pipewire.service vu-meter.service
+After=pipewire.service vu-meter.service aas.service
 # After= only orders startup; it propagates nothing afterwards. songrec reaches
 # PipeWire through pipewire-pulse, which survives a restart of the PipeWire
 # daemon and reconnects -- but the capture stream does not come back, and

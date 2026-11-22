@@ -1,4 +1,5 @@
-use analog_recognition::{audiocontrol, config, input_level, settings, songrec, state};
+use analog_recognition::server::AudioServer;
+use analog_recognition::{aas_level, audiocontrol, config, input_level, settings, songrec, state};
 
 use std::sync::Arc;
 
@@ -14,6 +15,8 @@ async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&cfg.logging.level))
         .init();
     log::info!("loaded config from {config_path}");
+    let server = AudioServer::detect();
+    log::info!("audio server: {server:?}");
     if cfg.vu_meter.ws_url.is_some() {
         log::warn!(
             "[vu_meter] ws_url is deprecated and ignored; the level is now captured \
@@ -39,10 +42,17 @@ async fn main() -> anyhow::Result<()> {
     ));
     let poll = cfg.configurator.poll_interval();
 
-    // Capture the analog input level natively from PipeWire (never the shared
-    // output meter) and drive Playing/Stopped from it. The activation level is
-    // re-read from the Web-UI setting on the same poll cadence.
-    let level = input_level::start_capture(&cfg.vu_meter.capture_target);
+    // Take the analog input's level (never the shared output meter) and drive
+    // Playing/Stopped from it: captured natively from PipeWire, or read from
+    // aas's analog meter. The activation level is re-read from the Web-UI
+    // setting on the same poll cadence.
+    let level = match server {
+        AudioServer::PipeWire => input_level::start_capture(&cfg.vu_meter.capture_target),
+        AudioServer::Aas => aas_level::start(
+            cfg.vu_meter.aas_levels_url.clone(),
+            input_level::LEVEL_STALE_AFTER,
+        ),
+    };
     let state_client = client.clone();
     let state_settings = settings.clone();
     let vu_cfg = cfg.vu_meter.clone();
@@ -64,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
 
     let rec_client = client.clone();
     let rec_settings = settings.clone();
-    let songrec_cfg = cfg.songrec.clone();
+    let songrec_cfg = cfg.songrec.for_server(server);
     let rec_handle = tokio::spawn(async move {
         songrec::run_recognition_task(
             &songrec_cfg,
